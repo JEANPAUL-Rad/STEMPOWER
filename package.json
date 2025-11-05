@@ -1,0 +1,56 @@
+{
+  "name": "backend-e-learning",
+  "version": "1.0.0",
+  "description": "",
+  "keywords": [],
+  "homepage": "https://github.com/JEANPAUL-Rad/Backend-E-learning#readme",
+  "bugs": {
+    "url": "https://github.com/JEANPAUL-Rad/Backend-E-learning/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JEANPAUL-Rad/Backend-E-learning.git"
+  },
+  "license": "ISC",
+  "author": "",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js"
+  },
+  "dependencies": {
+    "@getbrevo/brevo": "^3.0.1",
+    "axios": "^1.10.0",
+    "bcrypt": "^6.0.0",
+    "bcryptjs": "^3.0.2",
+    "brevo": "^1.0.0",
+    "cloudinary": "^2.7.0",
+    "connect-redis": "^9.0.0",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "csurf": "^1.11.0",
+    "date-fns-tz": "^3.2.0",
+    "dotenv": "^17.0.0",
+    "express": "^5.1.0",
+    "express-session": "^1.18.2",
+    "jsonwebtoken": "^9.0.2",
+    "mime-types": "^3.0.1",
+    "multer": "^2.0.2",
+    "nodemailer": "^7.0.5",
+    "nodemon": "^3.1.10",
+    "pg": "^8.16.3",
+    "postgres": "^3.4.7",
+    "redis": "^5.8.1",
+    "resend": "^4.6.0",
+    "sib-api-v3-sdk": "^8.5.0",
+    "socket.io": "^4.8.1",
+    "socket.io-client": "^4.8.1",
+    "twilio": "^4.23.0",
+    "uuid": "^11.1.0"
+  },
+  "devDependencies": {
+    "jest": "^30.0.4",
+    "supertest": "^7.1.1"
+  }
+}

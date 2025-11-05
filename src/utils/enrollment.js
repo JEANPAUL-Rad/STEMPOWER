@@ -1,0 +1,138 @@
+// utils/enrollment.js
+// Utility functions for enrollment management
+import sql from '../config/db.js';
+import { createEnrollment } from '../models/enrollment.model.js';
+
+/**
+ * Get enrolled modules for a user
+ * IMPORTANT: Users can only have ONE active enrollment at a time
+ * Returns only the most recent active enrollment module
+ * @param {number} user_id - User ID
+ * @returns {Promise<Array<string>>} Array with single module name (or empty array)
+ */
+export async function getUserEnrolledModules(user_id) {
+  // First, try to get from enrollments table
+  let enrollments = await sql`
+    SELECT DISTINCT module FROM enrollments 
+    WHERE user_id = ${user_id} AND status = 'active'
+    ORDER BY enrolled_at DESC
+    LIMIT 1
+  `;
+  
+  // If no enrollment found, check register table (fallback)
+  if (enrollments.length === 0) {
+    // Get user email
+    const userInfo = await sql`SELECT email FROM users WHERE user_id = ${user_id} LIMIT 1`;
+    const userEmail = userInfo.length > 0 ? userInfo[0].email : null;
+    
+    if (userEmail) {
+      // Try by user_id first - also check for paid registrations
+      const registrations = await sql`
+        SELECT id, module, payment_status FROM register 
+        WHERE (user_id = ${user_id} OR email_address = ${userEmail})
+          AND module IS NOT NULL
+        ORDER BY created_at DESC
+        LIMIT 1
+      `;
+      
+      if (registrations.length > 0) {
+        const reg = registrations[0];
+        
+        // Link user_id if not already linked
+        if (!reg.user_id) {
+          await sql`
+            UPDATE register 
+            SET user_id = ${user_id} 
+            WHERE id = ${reg.id}
+          `;
+        }
+        
+        // If payment is Paid, try to create enrollment automatically
+        if (reg.payment_status === 'Paid' && reg.module) {
+          try {
+            // Check if enrollment already exists
+            const existingEnroll = await sql`
+              SELECT enrollment_id FROM enrollments 
+              WHERE user_id = ${user_id} AND module = ${reg.module} AND status = 'active'
+              LIMIT 1
+            `;
+            
+            if (existingEnroll.length === 0) {
+              // Create enrollment automatically
+              await createEnrollment({
+                user_id: user_id,
+                registration_id: reg.id,
+                module: reg.module,
+                status: 'active'
+              });
+              console.log(`✅ Auto-created enrollment for user ${user_id} in module "${reg.module}"`);
+              
+              // Return the module immediately after creating enrollment
+              return [reg.module];
+            }
+          } catch (enrollErr) {
+            console.error('Error auto-creating enrollment:', enrollErr);
+          }
+        }
+        
+        // Return module from registration (even if payment pending, user should see it)
+        return [reg.module];
+      }
+    }
+  }
+  
+  return enrollments.map(e => e.module);
+}
+
+/**
+ * Check if user has access to a specific module
+ * @param {number} user_id - User ID
+ * @param {string} module - Module name
+ * @returns {Promise<boolean>} True if user has access
+ */
+export async function hasAccessToModule(user_id, module) {
+  if (!module) return false;
+  
+  const access = await sql`
+    SELECT 1 FROM enrollments 
+    WHERE user_id = ${user_id} 
+      AND module = ${module} 
+      AND status = 'active'
+    LIMIT 1
+  `;
+  return access.length > 0;
+}
+
+/**
+ * Get enrollment details for a user and module
+ * @param {number} user_id - User ID
+ * @param {string} module - Module name
+ * @returns {Promise<Object|null>} Enrollment object or null
+ */
+export async function getEnrollmentByUserAndModule(user_id, module) {
+  const enrollments = await sql`
+    SELECT * FROM enrollments 
+    WHERE user_id = ${user_id} 
+      AND module = ${module} 
+      AND status = 'active'
+    LIMIT 1
+  `;
+  return enrollments[0] || null;
+}
+
+/**
+ * Check if user has any active enrollments
+ * @param {number} user_id - User ID
+ * @returns {Promise<boolean>} True if user has active enrollments
+ */
+export async function hasActiveEnrollments(user_id) {
+  const enrollments = await sql`
+    SELECT 1 FROM enrollments 
+    WHERE user_id = ${user_id} 
+      AND status = 'active'
+    LIMIT 1
+  `;
+  return enrollments.length > 0;
+}
+
+
