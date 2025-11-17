@@ -43,6 +43,49 @@ const register = async (req, res) => {
   }
 };
 
+// Payment status for dashboard
+const getPaymentStatus = async (req, res) => {
+  try {
+    const userId = req.user?.user_id;
+    if (!userId) return res.status(401).json({ message: 'Unauthorized' });
+
+    const rows = await sql`
+      SELECT user_id, status, last_payment_date
+      FROM users
+      WHERE user_id = ${userId}
+      LIMIT 1
+    `;
+    if (rows.length === 0) return res.status(404).json({ message: 'User not found' });
+
+    const user = rows[0];
+    const now = new Date();
+    const lastPayment = user.last_payment_date ? new Date(user.last_payment_date) : null;
+    let daysSince = null;
+    let blockOn = null;
+    let daysUntilBlock = null;
+
+    if (lastPayment) {
+      const diffMs = now.getTime() - lastPayment.getTime();
+      daysSince = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+      blockOn = new Date(lastPayment.getTime() + 30 * 24 * 60 * 60 * 1000);
+      const remainingMs = blockOn.getTime() - now.getTime();
+      daysUntilBlock = Math.max(0, Math.ceil(remainingMs / (1000 * 60 * 60 * 24)));
+    }
+
+    return res.json({
+      user_id: user.user_id,
+      status: user.status,
+      last_payment_date: user.last_payment_date,
+      block_on: blockOn ? blockOn.toISOString() : null,
+      days_since_payment: daysSince,
+      days_until_block: daysUntilBlock
+    });
+  } catch (error) {
+    console.error('getPaymentStatus error:', error);
+    return res.status(500).json({ message: 'Failed to load payment status' });
+  }
+};
+
 // Confirm: Set status to 'active' and create enrollments for paid registrations
 const confirm = async (req, res) => {
   const { token } = req.params;
@@ -296,5 +339,6 @@ export default {
   logout,
   checkSession,
   forgotPassword,
-  resetPassword
+  resetPassword,
+  getPaymentStatus
 };

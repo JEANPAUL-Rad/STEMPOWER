@@ -51,6 +51,13 @@ export async function deleteWeek(req, res) {
     await WeekModel.deleteWeek(req.params.week_id);
     res.json({ message: "Week deleted" });
   } catch (err) {
+    // Handle FK violation (projects referencing this week)
+    if (err && err.code === '23503') {
+      return res.status(409).json({
+        message: 'Cannot delete week while projects are linked to it. Move or delete the projects first.',
+        detail: err.detail
+      });
+    }
     res.status(500).json({ message: err.message });
   }
 }

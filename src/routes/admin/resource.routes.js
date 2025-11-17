@@ -23,14 +23,14 @@ const router = express.Router();
 router.put('/resources/:resource_id', 
   authenticate, 
   requireAdmin, 
-  upload.single('file'), // ✅ handles formData.append("file", file)
+  upload.any(), // accept multiple files/field names
   resourceController.update
 );
 
 router.post('/resources', 
   authenticate, 
   requireAdmin, 
-  upload.single('file'), // ✅ also for create
+  upload.any(), // accept multiple files on create
   resourceController.create
 );
 

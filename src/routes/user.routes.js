@@ -14,5 +14,6 @@ router.post('/reset-password', userController.resetPassword);
 // Protected routes
 router.post('/logout', authenticate, userController.logout);
 router.get('/check-session', userController.checkSession);
+router.get('/payment/status', authenticate, userController.getPaymentStatus);
 
 export default router;

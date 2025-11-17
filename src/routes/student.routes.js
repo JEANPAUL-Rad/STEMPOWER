@@ -66,6 +66,8 @@ router.get('/live-sessions', studentController.getAllLiveSessions);
 router.get('/assignments', studentController.getStudentAssignments);
 router.get('/assignments/:assignment_id', studentController.getAssignmentById);
 router.post('/assignments/:assignment_id/download', studentController.downloadAssignment);
+// Direct file access for assignment question
+router.get('/assignments/:assignment_id/file', studentController.downloadAssignmentFile);
 
 // Assignment submission route with proper error handling
 router.post(

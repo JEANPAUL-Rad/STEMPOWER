@@ -7,10 +7,9 @@ export const createAssignment = async (assignmentData) => {
     const {
       project_id,
       lesson_id,
+      module,
       title,
       description,
-      question_file_url,
-      question_file_name,
       max_file_size_mb,
       allowed_file_types,
       due_date,
@@ -19,13 +18,12 @@ export const createAssignment = async (assignmentData) => {
 
     const result = await sql`
       INSERT INTO assignments (
-        project_id, lesson_id, title, description, question_file_url, 
-        question_file_name, max_file_size_mb, allowed_file_types, 
+        project_id, lesson_id, module, title, description,
+        max_file_size_mb, allowed_file_types,
         due_date, created_by, created_at, updated_at
       ) VALUES (
-        ${project_id}, ${lesson_id}, ${title}, ${description}, 
-        ${question_file_url}, ${question_file_name}, ${max_file_size_mb}, 
-        ${allowed_file_types}, ${due_date}, ${created_by}, 
+        ${project_id}, ${lesson_id}, ${module}, ${title}, ${description},
+        ${max_file_size_mb}, ${allowed_file_types}, ${due_date}, ${created_by},
         ${createDBTimestamp()}, ${createDBTimestamp()}
       ) RETURNING *
     `;
@@ -132,18 +130,21 @@ export const getAssignmentsByProject = async (projectId) => {
 export const updateAssignment = async (assignmentId, updateData) => {
   try {
     const {
-      title,
-      description,
-      max_file_size_mb,
-      allowed_file_types,
-      due_date,
-      is_active
-    } = updateData;
+      title = null,
+      description = null,
+      module = null,
+      max_file_size_mb = null,
+      allowed_file_types = null,
+      due_date = null,
+      is_active = null,
+      
+    } = updateData || {};
 
     const result = await sql`
       UPDATE assignments SET
         title = COALESCE(${title}, title),
         description = COALESCE(${description}, description),
+        module = COALESCE(${module}, module),
         max_file_size_mb = COALESCE(${max_file_size_mb}, max_file_size_mb),
         allowed_file_types = COALESCE(${allowed_file_types}, allowed_file_types),
         due_date = COALESCE(${due_date}, due_date),

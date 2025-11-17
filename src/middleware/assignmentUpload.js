@@ -10,57 +10,55 @@ const ensureDirectoryExists = (dirPath) => {
   }
 };
 
-// Storage configuration for assignment questions (used by admin/teacher)
-const assignmentStorage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const uploadPath = path.join(process.cwd(), 'uploads', 'assignments');
-    ensureDirectoryExists(uploadPath);
-    cb(null, uploadPath);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    const ext = path.extname(file.originalname);
-    const sanitizedName = file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_');
-    cb(null, `assignment-${uniqueSuffix}${ext}`);
-  }
-});
+// Use memory storage to be compatible with Cloudinary upload (expects file.buffer)
+const assignmentStorage = multer.memoryStorage();
 
-// Storage configuration for submissions (used by students)
-const submissionStorage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const uploadPath = path.join(process.cwd(), 'uploads', 'assignment-submissions');
-    ensureDirectoryExists(uploadPath);
-    cb(null, uploadPath);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    const ext = path.extname(file.originalname);
-    const sanitizedName = file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_');
-    cb(null, `submission-${req.params.assignment_id}-${uniqueSuffix}${ext}`);
-  }
-});
+const submissionStorage = multer.memoryStorage();
 
 // Common allowed types for assignments (admin/teacher uploads)
-const assignmentAllowedExtensions = ['.pdf', '.doc', '.docx', '.txt', '.jpg', '.jpeg', '.png', '.gif'];
+const assignmentAllowedExtensions = [
+  '.pdf', '.doc', '.docx', '.txt', '.jpg', '.jpeg', '.png', '.gif',
+  '.xls', '.xlsx', '.ppt', '.pptx', '.csv', '.zip', '.rar', '.mp4', '.mov', '.avi'
+];
 const assignmentAllowedMimeTypes = [
   'application/pdf',
   'application/msword',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'text/csv',
   'text/plain',
   'image/jpeg',
   'image/png',
-  'image/gif'
+  'image/gif',
+  'application/zip',
+  'application/x-rar-compressed',
+  'video/mp4',
+  'video/quicktime',
+  'video/x-msvideo'
 ];
 
 // Common allowed types for submissions (students)
-const submissionAllowedExtensions = ['.pdf', '.doc', '.docx', '.txt', '.zip', '.rar'];
+const submissionAllowedExtensions = [
+  '.pdf', '.doc', '.docx', '.txt', '.zip', '.rar', '.xls', '.xlsx', '.ppt', '.pptx', '.csv', '.jpg', '.jpeg', '.png', '.mp4'
+];
 const submissionAllowedMimeTypes = [
   'application/pdf',
   'application/msword',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'text/csv',
   'text/plain',
   'application/zip',
-  'application/x-rar-compressed'
+  'application/x-rar-compressed',
+  'image/jpeg',
+  'image/png',
+  'video/mp4'
 ];
 
 // File filter factory function
@@ -89,7 +87,7 @@ export const uploadAssignment = multer({
     fileSize: 50 * 1024 * 1024, // 50MB limit for assignment files
   },
   fileFilter: createFileFilter(assignmentAllowedExtensions, assignmentAllowedMimeTypes)
-}).single('questionFile');
+}).array('files', 10);
 
 // Middleware for uploading assignment submissions (students)
 export const uploadSubmission = multer({
@@ -98,7 +96,7 @@ export const uploadSubmission = multer({
     fileSize: 50 * 1024 * 1024, // 50MB limit
   },
   fileFilter: createFileFilter(submissionAllowedExtensions, submissionAllowedMimeTypes)
-}).single('file');
+}).array('files', 10);
 
 // Error handling middleware
 export const handleUploadErrors = (err, req, res, next) => {

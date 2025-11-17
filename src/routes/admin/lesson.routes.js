@@ -7,10 +7,10 @@ import upload from '../../middleware/upload.js';
 const router = express.Router();
 
 // Lesson routes
-router.post('/lessons', authenticate, requireAdmin, lessonController.createLesson);
+router.post('/lessons', authenticate, requireAdmin, upload.any(), lessonController.createLesson);
 router.get('/lessons', authenticate, requireAdmin, lessonController.getAllLessons);
 router.get('/lessons/:lesson_id', authenticate, requireAdmin, lessonController.getLessonById);
-router.put('/lessons/:lesson_id', authenticate, requireAdmin, lessonController.updateLesson);
+router.put('/lessons/:lesson_id', authenticate, requireAdmin, upload.any(), lessonController.updateLesson);
 router.delete('/lessons/:lesson_id', authenticate, requireAdmin, lessonController.deleteLesson);
 
 // File upload routes

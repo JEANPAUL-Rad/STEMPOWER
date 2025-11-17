@@ -1,8 +1,10 @@
 import * as AssignmentModel from '../../models/admin/assignment.model.js';
+import * as AssignmentFileModel from '../../models/admin/assignment_file.model.js';
+import * as SubmissionFileModel from '../../models/admin/assignment_submission_file.model.js';
 import path from 'path';
 import fs from 'fs';
 import mime from 'mime-types';
-import { saveFile, saveAssignmentFile } from '../../utils/saveFile.js';
+import { saveFile, saveAssignmentFile, saveSubmissionFile } from '../../utils/saveFile.js';
 import { extractPublicId, generateDownloadUrl } from '../../utils/downloadFile.js'; 
 
 // Get all assignments
@@ -22,6 +24,61 @@ export const getAllAssignments = async (req, res) => {
   }
 };
 
+// JSON-only due date update (no file upload)
+export const updateAssignmentDueDate = async (req, res) => {
+  try {
+    const { assignment_id } = req.params;
+    let { due_date } = req.body;
+
+    if (!due_date) {
+      return res.status(400).json({ success: false, message: 'due_date is required' });
+    }
+
+    // Normalize various inputs to a proper ISO string for DB casting
+    // Supported relative formats: +30, +30m, +2h, +1d
+    if (typeof due_date === 'string' && due_date.startsWith('+')) {
+      const rel = due_date.trim().toLowerCase();
+      const match = rel.match(/^\+(\d+)([mhd])?$/);
+      if (!match) {
+        return res.status(400).json({ success: false, message: 'Invalid format. Use +<minutes>, +<num>m, +<num>h, or +<num>d' });
+      }
+      const amount = parseInt(match[1], 10);
+      const unit = match[2] || 'm';
+      const base = new Date();
+      if (unit === 'm') base.setMinutes(base.getMinutes() + amount);
+      else if (unit === 'h') base.setHours(base.getHours() + amount);
+      else if (unit === 'd') base.setDate(base.getDate() + amount);
+      due_date = base.toISOString();
+    }
+
+    // Support 'YYYY-MM-DD HH:MM:SS' by converting space to 'T'
+    if (typeof due_date === 'string' && due_date.includes(' ') && !due_date.includes('T')) {
+      due_date = due_date.replace(' ', 'T');
+    }
+    const parsed = new Date(due_date);
+    if (isNaN(parsed.getTime())) {
+      return res.status(400).json({ success: false, message: 'Invalid due_date' });
+    }
+
+    // Pass JS Date object for proper casting to timestamp without time zone
+    const updateBody = { due_date: parsed };
+
+    const assignment = await AssignmentModel.updateAssignment(assignment_id, updateBody);
+    if (!assignment) {
+      return res.status(404).json({ success: false, message: 'Assignment not found' });
+    }
+    res.json({ success: true, message: 'Due date updated', data: assignment });
+  } catch (error) {
+    console.error('Error updating due date:', {
+      error: error.message,
+      stack: error.stack,
+      params: req.params,
+      body: req.body
+    });
+    res.status(500).json({ success: false, message: 'Failed to update assignment', error: error.message });
+  }
+};
+
 // Get assignment by ID
 export const getAssignmentById = async (req, res) => {
   try {
@@ -35,9 +92,12 @@ export const getAssignmentById = async (req, res) => {
       });
     }
 
+    // Attach files list
+    const files = await AssignmentFileModel.getFilesByAssignment(assignment_id);
+
     res.json({
       success: true,
-      data: assignment
+      data: { ...assignment, files }
     });
   } catch (error) {
     console.error('Error fetching assignment:', error);
@@ -121,39 +181,30 @@ export const createAssignment = async (req, res) => {
       });
     }
 
-    // Check if file was uploaded
-    if (!req.file) {
-      return res.status(400).json({
-        success: false,
-        message: 'Question file is required'
-      });
-    }
-
-    // Upload to Cloudinary with proper settings
-    let fileResult;
-    try {
-      fileResult = await saveAssignmentFile(req.file); // This now returns {secure_url, public_id, resource_type}
-    } catch (uploadError) {
-      console.error('Cloudinary upload failed:', uploadError);
-      return res.status(500).json({
-        success: false,
-        message: 'File upload to cloud failed: ' + uploadError.message
-      });
-    }
-
-    const assignmentData = {
-      ...req.body,
-      question_file_url: fileResult,
-      question_file_name: req.file.originalname,
-      created_by: userId
-    };
-
+    // Create assignment first (files are stored separately)
+    const assignmentData = { ...req.body, created_by: userId };
     const assignment = await AssignmentModel.createAssignment(assignmentData);
+
+    // If files were uploaded, upload to Cloudinary and persist in assignment_files
+    let filesInserted = [];
+    if (Array.isArray(req.files) && req.files.length > 0) {
+      try {
+        const uploaded = [];
+        for (const f of req.files) {
+          const url = await saveAssignmentFile(f);
+          uploaded.push({ url, name: f.originalname, size: f.size });
+        }
+        filesInserted = await AssignmentFileModel.addAssignmentFiles(assignment.assignment_id, uploaded, userId);
+      } catch (uploadError) {
+        console.error('Cloudinary multi-upload failed:', uploadError);
+        // Do not fail the whole creation if files fail; return with warning
+      }
+    }
 
     res.status(201).json({
       success: true,
       message: 'Assignment created successfully',
-      data: assignment
+      data: { ...assignment, files: filesInserted }
     });
 
   } catch (error) {
@@ -167,7 +218,9 @@ export const createAssignment = async (req, res) => {
 export const updateAssignment = async (req, res) => {
   try {
     const { assignment_id } = req.params;
-    const assignment = await AssignmentModel.updateAssignment(assignment_id, req.body);
+    const updateBody = { ...req.body };
+
+    const assignment = await AssignmentModel.updateAssignment(assignment_id, updateBody);
     
     if (!assignment) {
       return res.status(404).json({
@@ -176,10 +229,42 @@ export const updateAssignment = async (req, res) => {
       });
     }
 
+    // Handle file additions
+    let addedFiles = [];
+    if (Array.isArray(req.files) && req.files.length > 0) {
+      try {
+        const uploaded = [];
+        for (const f of req.files) {
+          const url = await saveAssignmentFile(f);
+          uploaded.push({ url, name: f.originalname, size: f.size });
+        }
+        addedFiles = await AssignmentFileModel.addAssignmentFiles(assignment_id, uploaded, req.user.user_id);
+      } catch (uploadErr) {
+        console.error('Error uploading new assignment files:', uploadErr);
+      }
+    }
+
+    // Handle file deletions
+    if (updateBody.remove_file_ids) {
+      try {
+        const ids = Array.isArray(updateBody.remove_file_ids)
+          ? updateBody.remove_file_ids
+          : String(updateBody.remove_file_ids).split(',').map(s => s.trim()).filter(Boolean);
+        for (const id of ids) {
+          await AssignmentFileModel.deleteFile(id);
+        }
+      } catch (delErr) {
+        console.error('Error deleting assignment files:', delErr);
+      }
+    }
+
+    // Return assignment with current files
+    const files = await AssignmentFileModel.getFilesByAssignment(assignment_id);
+
     res.json({
       success: true,
       message: 'Assignment updated successfully',
-      data: assignment
+      data: { ...assignment, files, addedFiles }
     });
   } catch (error) {
     console.error('Error updating assignment:', error);
@@ -294,24 +379,10 @@ export const downloadSubmissionFile = async (req, res) => {
 
 export const downloadAssignmentFile = async (req, res) => {
   try {
-    const { assignment_id } = req.params;
-    const assignment = await AssignmentModel.getAssignmentById(assignment_id);
-
-    if (!assignment || !assignment.question_file_url) {
-      return res.status(404).json({ 
-        success: false, 
-        message: 'Assignment file not found' 
-      });
-    }
-
-    // Extract public ID and generate download URL
-    const publicId = extractPublicId(assignment.question_file_url);
-    const downloadUrl = generateDownloadUrl(publicId, 'raw', assignment.question_file_name);
-
-    res.json({
-      success: true,
-      url: downloadUrl,
-      fileName: assignment.question_file_name
+    // Deprecated after multi-file change
+    return res.status(410).json({
+      success: false,
+      message: 'Deprecated endpoint. Use files list on the assignment and download by file_id.'
     });
 
   } catch (error) {
@@ -417,7 +488,8 @@ export const editSubmission = async (req, res) => {
     console.log('Edit submission request:', {
       submission_id,
       userId,
-      file: req.file
+      file: req.file,
+      filesCount: Array.isArray(req.files) ? req.files.length : (req.file ? 1 : 0)
     });
 
     // Check if submission exists and belongs to user
@@ -438,44 +510,41 @@ export const editSubmission = async (req, res) => {
       });
     }
 
-    // Check if file was uploaded
-    if (!req.file) {
-      return res.status(400).json({
-        success: false,
-        message: 'Submission file is required'
-      });
+    // Add newly uploaded files (support multiple)
+    const files = Array.isArray(req.files) ? req.files : (req.file ? [req.file] : []);
+    let addedFiles = [];
+    if (files.length === 0 && !req.body.remove_file_ids) {
+      return res.status(400).json({ success: false, message: 'No changes provided. Upload files or specify remove_file_ids.' });
     }
 
-    const submissionData = {
-      answer_file_url: `assignment-submissions/${req.file.filename}`,
-      answer_file_name: req.file.originalname
-    };
-
-    const submission = await AssignmentModel.updateSubmission(submission_id, submissionData);
-    
-    if (!submission) {
-      return res.status(404).json({
-        success: false,
-        message: 'Failed to update submission'
-      });
+    if (files.length > 0) {
+      const uploaded = [];
+      for (const f of files) {
+        const url = await saveSubmissionFile(f);
+        uploaded.push({ url, name: f.originalname, size: f.size });
+      }
+      addedFiles = await SubmissionFileModel.addSubmissionFiles(submission_id, uploaded, userId);
     }
 
+    // Handle file removals
+    if (req.body.remove_file_ids) {
+      const ids = Array.isArray(req.body.remove_file_ids)
+        ? req.body.remove_file_ids
+        : String(req.body.remove_file_ids).split(',').map(s => s.trim()).filter(Boolean);
+      for (const id of ids) {
+        await SubmissionFileModel.deleteFile(Number(id));
+      }
+    }
+
+    // Return submission with current files
+    const filesNow = await SubmissionFileModel.getFilesBySubmission(submission_id);
     res.json({
       success: true,
       message: 'Submission updated successfully',
-      data: submission
+      data: { ...existingSubmission, files: filesNow, addedFiles }
     });
   } catch (error) {
     console.error('Error editing submission:', error);
-    
-    // Clean up uploaded file if update fails
-    if (req.file) {
-      const filePath = path.join(process.cwd(), 'uploads', 'assignment-submissions', req.file.filename);
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-      }
-    }
-    
     res.status(500).json({
       success: false,
       message: 'Failed to edit submission: ' + error.message

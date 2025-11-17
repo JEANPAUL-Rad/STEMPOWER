@@ -11,77 +11,110 @@ import { createEnrollment } from '../models/enrollment.model.js';
  * @returns {Promise<Array<string>>} Array with single module name (or empty array)
  */
 export async function getUserEnrolledModules(user_id) {
-  // First, try to get from enrollments table
-  let enrollments = await sql`
-    SELECT DISTINCT module FROM enrollments 
-    WHERE user_id = ${user_id} AND status = 'active'
-    ORDER BY enrolled_at DESC
-    LIMIT 1
-  `;
-  
-  // If no enrollment found, check register table (fallback)
-  if (enrollments.length === 0) {
-    // Get user email
-    const userInfo = await sql`SELECT email FROM users WHERE user_id = ${user_id} LIMIT 1`;
-    const userEmail = userInfo.length > 0 ? userInfo[0].email : null;
-    
-    if (userEmail) {
-      // Try by user_id first - also check for paid registrations
-      const registrations = await sql`
-        SELECT id, module, payment_status FROM register 
-        WHERE (user_id = ${user_id} OR email_address = ${userEmail})
-          AND module IS NOT NULL
-        ORDER BY created_at DESC
+  try {
+    // First, try to get from enrollments table
+    let enrollments;
+    try {
+      enrollments = await sql`
+        SELECT DISTINCT module FROM enrollments 
+        WHERE user_id = ${user_id} AND status = 'active'
+        ORDER BY enrolled_at DESC
         LIMIT 1
       `;
-      
-      if (registrations.length > 0) {
-        const reg = registrations[0];
+    } catch (enrollError) {
+      console.error(`Error querying enrollments table for user ${user_id}:`, enrollError);
+      // Continue to fallback
+      enrollments = [];
+    }
+    
+    // If no enrollment found, check register table (fallback)
+    if (!enrollments || enrollments.length === 0) {
+      try {
+        // Get user email
+        const userInfo = await sql`SELECT email FROM users WHERE user_id = ${user_id} LIMIT 1`;
+        const userEmail = userInfo.length > 0 ? userInfo[0].email : null;
         
-        // Link user_id if not already linked
-        if (!reg.user_id) {
-          await sql`
-            UPDATE register 
-            SET user_id = ${user_id} 
-            WHERE id = ${reg.id}
+        if (userEmail) {
+          // Try by user_id first - also check for paid registrations
+          const registrations = await sql`
+            SELECT id, module, payment_status, user_id FROM register 
+            WHERE (user_id = ${user_id} OR email_address = ${userEmail})
+              AND module IS NOT NULL
+            ORDER BY created_at DESC
+            LIMIT 1
           `;
-        }
-        
-        // If payment is Paid, try to create enrollment automatically
-        if (reg.payment_status === 'Paid' && reg.module) {
-          try {
-            // Check if enrollment already exists
-            const existingEnroll = await sql`
-              SELECT enrollment_id FROM enrollments 
-              WHERE user_id = ${user_id} AND module = ${reg.module} AND status = 'active'
-              LIMIT 1
-            `;
+          
+          if (registrations.length > 0) {
+            const reg = registrations[0];
             
-            if (existingEnroll.length === 0) {
-              // Create enrollment automatically
-              await createEnrollment({
-                user_id: user_id,
-                registration_id: reg.id,
-                module: reg.module,
-                status: 'active'
-              });
-              console.log(`✅ Auto-created enrollment for user ${user_id} in module "${reg.module}"`);
-              
-              // Return the module immediately after creating enrollment
+            // Link user_id if not already linked
+            if (!reg.user_id) {
+              try {
+                await sql`
+                  UPDATE register 
+                  SET user_id = ${user_id} 
+                  WHERE id = ${reg.id}
+                `;
+              } catch (updateError) {
+                console.error(`Error updating register.user_id for registration ${reg.id}:`, updateError);
+                // Continue anyway
+              }
+            }
+            
+            // If payment is Paid, try to create enrollment automatically
+            if (reg.payment_status === 'Paid' && reg.module) {
+              try {
+                // Check if enrollment already exists
+                const existingEnroll = await sql`
+                  SELECT enrollment_id FROM enrollments 
+                  WHERE user_id = ${user_id} AND module = ${reg.module} AND status = 'active'
+                  LIMIT 1
+                `;
+                
+                if (existingEnroll.length === 0) {
+                  // Create enrollment automatically
+                  await createEnrollment({
+                    user_id: user_id,
+                    registration_id: reg.id,
+                    module: reg.module,
+                    status: 'active'
+                  });
+                  console.log(`✅ Auto-created enrollment for user ${user_id} in module "${reg.module}"`);
+                  
+                  // Return the module immediately after creating enrollment
+                  return [reg.module];
+                }
+              } catch (enrollErr) {
+                console.error('Error auto-creating enrollment:', enrollErr);
+                // Continue and return module from registration anyway
+              }
+            }
+            
+            // Return module from registration (even if payment pending, user should see it)
+            if (reg.module) {
               return [reg.module];
             }
-          } catch (enrollErr) {
-            console.error('Error auto-creating enrollment:', enrollErr);
           }
         }
-        
-        // Return module from registration (even if payment pending, user should see it)
-        return [reg.module];
+      } catch (fallbackError) {
+        console.error(`Error in fallback enrollment lookup for user ${user_id}:`, fallbackError);
+        // Return empty array if fallback fails
+        return [];
       }
     }
+    
+    // Return modules from enrollments
+    if (enrollments && enrollments.length > 0) {
+      return enrollments.map(e => e.module).filter(m => m); // Filter out null/undefined
+    }
+    
+    return [];
+  } catch (error) {
+    console.error(`Critical error in getUserEnrolledModules for user ${user_id}:`, error);
+    console.error('Error stack:', error.stack);
+    // Return empty array instead of throwing
+    return [];
   }
-  
-  return enrollments.map(e => e.module);
 }
 
 /**

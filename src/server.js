@@ -2,6 +2,7 @@ import { createServer } from 'http';
 import app from './app.js';
 import { initializeWebSocket } from './services/websocketService.js';
 import quizTimerService from './services/quizTimerService.js';
+import { startAutoBlockJob } from './jobs/autoBlockJob.js';
 
 const PORT = process.env.PORT || 5000;
 
@@ -25,6 +26,9 @@ initializeWebSocket(server);
 // Start quiz timer service
 console.log('Starting Quiz Timer Service...');
 quizTimerService.start();
+
+// Start auto-block scheduler
+startAutoBlockJob();
 
 server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);

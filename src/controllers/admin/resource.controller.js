@@ -1,58 +1,84 @@
 
 import * as ResourceModel from '../../models/admin/resource.model.js';
-import fs from 'fs';
-import path from 'path';
-import { saveFile, saveResourceFile } from '../../utils/saveFile.js';
+import * as ResourceFileModel from '../../models/admin/resource_file.model.js';
+import { saveResourceFile } from '../../utils/saveFile.js';
 
-// Helper function to validate YouTube URL
-function isValidYouTubeUrl(url) {
-  const youtubeRegex = /^(https?:\/\/)?(www\.)?(youtube\.com|youtu\.be)\/.+/;
-  return youtubeRegex.test(url);
-}
+const normalizeBoolean = (value, defaultValue = true) => {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const lower = value.trim().toLowerCase();
+    if (lower === 'true' || lower === '1' || lower === 'yes') return true;
+    if (lower === 'false' || lower === '0' || lower === 'no') return false;
+  }
+  return defaultValue;
+};
+
+const isValidUrl = (url) => {
+  try {
+    new URL(url);
+    return true;
+  } catch {
+    return false;
+  }
+};
 
 // POST /resources - Create new resource
 export async function create(req, res) {
   try {
-    const { type, title, content, video_url } = req.body;
-    
-    // Validate required fields
+    const {
+      type,
+      title,
+      content,
+      video_url,
+      module,
+      is_public,
+      week_id
+    } = req.body;
+
     if (!type || !title) {
-      return res.status(400).json({ message: "Type and title are required" });
+      return res.status(400).json({ message: 'Type and title are required' });
     }
 
-    let file_url = null;
-
-    // Handle different resource types
-    if (type === 'video') {
-      // For videos, check if it's a YouTube URL or uploaded file
-      if (video_url) {
-        if (!isValidYouTubeUrl(video_url)) {
-          return res.status(400).json({ message: "Invalid YouTube URL" });
-        }
-        file_url = video_url;
-      } else if (req.file) {
-        // Upload non-YouTube video file to Cloudinary
-        file_url = await saveResourceFile(req.file);
-      } else {
-        return res.status(400).json({ message: "Video URL or video file is required for video type" });
-      }
-    } else {
-      // For curriculum and concept, file upload is required
-      if (!req.file) {
-        return res.status(400).json({ message: "File is required for curriculum and concept types" });
-      }
-      // Upload file to Cloudinary
-      file_url = await saveResourceFile(req.file);
-    }
-
-    const resource = await ResourceModel.createResource({ 
-      type, 
-      title, 
-      content: content || null, 
-      file_url 
+    const resource = await ResourceModel.createResource({
+      type,
+      title,
+      content: content || null,
+      module: module || null,
+      is_public: normalizeBoolean(is_public, true),
+      week_id: week_id ? Number(week_id) : null
     });
 
-    res.status(201).json(resource);
+    const uploadedFiles = [];
+    const files = Array.isArray(req.files) ? req.files : (req.file ? [req.file] : []);
+    for (const file of files) {
+      const url = await saveResourceFile(file);
+      const meta = await ResourceFileModel.addResourceFile({
+        resource_id: resource.resource_id,
+        file_url: url,
+        file_name: file.originalname,
+        file_type: file.mimetype,
+        file_size_bytes: file.size,
+        uploaded_by: req.user?.user_id || null
+      });
+      uploadedFiles.push(meta);
+    }
+
+    if (video_url && video_url.trim() !== '') {
+      if (!isValidUrl(video_url)) {
+        return res.status(400).json({ message: 'Invalid video URL provided' });
+      }
+      const meta = await ResourceFileModel.addResourceFile({
+        resource_id: resource.resource_id,
+        file_url: video_url.trim(),
+        file_name: 'Video Link',
+        file_type: 'text/url',
+        file_size_bytes: null,
+        uploaded_by: req.user?.user_id || null
+      });
+      uploadedFiles.push(meta);
+    }
+
+    res.status(201).json({ ...resource, files: uploadedFiles });
   } catch (err) {
     console.error('Create resource error:', err);
     res.status(500).json({ message: err.message });
@@ -90,7 +116,8 @@ export async function get(req, res) {
     if (!resource) {
       return res.status(404).json({ message: "Resource not found" });
     }
-    res.json(resource);
+    const files = await ResourceFileModel.getFilesByResourceId(resource.resource_id);
+    res.json({ ...resource, files });
   } catch (err) {
     console.error('Get resource error:', err);
     res.status(500).json({ message: err.message });
@@ -100,7 +127,16 @@ export async function get(req, res) {
 // PUT /resources/:resource_id - Update resource
 export async function update(req, res) {
   try {
-    const { type, title, content, video_url } = req.body;
+    const {
+      type,
+      title,
+      content,
+      video_url,
+      module,
+      is_public,
+      week_id,
+      remove_file_ids
+    } = req.body;
     const resource_id = req.params.resource_id;
 
     // Get existing resource
@@ -109,40 +145,69 @@ export async function update(req, res) {
       return res.status(404).json({ message: "Resource not found" });
     }
 
-    let file_url = existingResource.file_url; // Keep existing file by default
-
-    // Handle file updates based on type
-    if (type === 'video') {
-      if (video_url) {
-        if (!isValidYouTubeUrl(video_url)) {
-          return res.status(400).json({ message: "Invalid YouTube URL" });
-        }
-        // No local deletion necessary when using Cloudinary URLs
-        file_url = video_url;
-      } else if (req.file) {
-        // Upload new video file to Cloudinary
-        file_url = await saveResourceFile(req.file);
-      }
-    } else {
-      // For curriculum and concept
-      if (req.file) {
-        // Upload replacement file to Cloudinary
-        file_url = await saveResourceFile(req.file);
-      }
-    }
-
-    const updatedResource = await ResourceModel.updateResource(resource_id, { 
-      type: type || existingResource.type, 
-      title: title || existingResource.title, 
-      content: content !== undefined ? content : existingResource.content, 
-      file_url 
+    const updatedResource = await ResourceModel.updateResource(resource_id, {
+      type: type || existingResource.type,
+      title: title || existingResource.title,
+      content: content !== undefined ? content : existingResource.content,
+      module: module !== undefined ? module : existingResource.module,
+      is_public:
+        is_public !== undefined
+          ? normalizeBoolean(is_public, existingResource.is_public)
+          : existingResource.is_public,
+      week_id: week_id ? Number(week_id) : existingResource.week_id || null
     });
 
     if (!updatedResource) {
       return res.status(404).json({ message: "Resource not found" });
     }
 
-    res.json(updatedResource);
+    // Remove selected files if requested
+    if (remove_file_ids) {
+      const ids = Array.isArray(remove_file_ids)
+        ? remove_file_ids
+        : String(remove_file_ids)
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean);
+      for (const id of ids) {
+        await ResourceFileModel.deleteFile(Number(id));
+      }
+    }
+
+    // Add any newly uploaded files
+    const addedFiles = [];
+    const files = Array.isArray(req.files) ? req.files : (req.file ? [req.file] : []);
+    for (const file of files) {
+      const url = await saveResourceFile(file);
+      const meta = await ResourceFileModel.addResourceFile({
+        resource_id: Number(resource_id),
+        file_url: url,
+        file_name: file.originalname,
+        file_type: file.mimetype,
+        file_size_bytes: file.size,
+        uploaded_by: req.user?.user_id || null,
+      });
+      addedFiles.push(meta);
+    }
+
+    // If video_url provided on update, validate and store as link file
+    if (video_url && video_url.trim() !== '') {
+      if (!isValidUrl(video_url)) {
+        return res.status(400).json({ message: 'Invalid video URL provided' });
+      }
+      const meta = await ResourceFileModel.addResourceFile({
+        resource_id: Number(resource_id),
+        file_url: video_url.trim(),
+        file_name: 'Video Link',
+        file_type: 'text/url',
+        file_size_bytes: null,
+        uploaded_by: req.user?.user_id || null,
+      });
+      addedFiles.push(meta);
+    }
+
+    const filesNow = await ResourceFileModel.getFilesByResourceId(Number(resource_id));
+    res.json({ ...updatedResource, files: filesNow, addedFiles });
   } catch (err) {
     console.error('Update resource error:', err);
     res.status(500).json({ message: err.message });
@@ -153,18 +218,9 @@ export async function update(req, res) {
 export async function remove(req, res) {
   try {
     const resource_id = req.params.resource_id;
-    
-    // Get resource to delete associated file
-    // With Cloudinary URLs, nothing to delete locally. If older records used local files,
-    // you may keep the cleanup below, otherwise it's safe to skip.
-    const resource = await ResourceModel.getResourceById(resource_id);
-    if (resource && resource.file_url && resource.file_url.startsWith('/uploads/')) {
-      const filePath = path.join(process.cwd(), 'uploads', path.basename(resource.file_url));
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-      }
-    }
-
+    // Delete metadata rows for files (Cloudinary cleanup optional, URLs public)
+    // Note: If you want to also delete files from Cloudinary, store public_id and call API here.
+    // For now, just remove DB references.
     await ResourceModel.deleteResource(resource_id);
     res.json({ message: "Resource deleted successfully" });
   } catch (err) {

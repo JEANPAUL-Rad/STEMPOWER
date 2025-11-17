@@ -15,8 +15,11 @@ router.use(authenticate);
 router.get('/assignments', assignmentController.getAllAssignments);
 router.get('/assignments/:assignment_id', assignmentController.getAssignmentById);
 router.post('/assignments', uploadAssignment, assignmentController.createAssignment);
-router.put('/assignments/:assignment_id', assignmentController.updateAssignment);
+router.put('/assignments/:assignment_id', uploadAssignment, assignmentController.updateAssignment);
 router.delete('/assignments/:assignment_id', assignmentController.deleteAssignment);
+
+// Lightweight JSON-only due date update (no file upload middleware)
+router.patch('/assignments/:assignment_id/due-date', assignmentController.updateAssignmentDueDate);
 
 // Assignment submissions management
 router.get('/assignments/:assignment_id/submissions', assignmentController.getAssignmentSubmissions);

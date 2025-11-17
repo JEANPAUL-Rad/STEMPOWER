@@ -1,6 +1,7 @@
 import * as Student from '../models/student.model.js';
 import * as AssignmentModel from '../models/admin/assignment.model.js';
 import { saveFile, saveSubmissionFile } from '../utils/saveFile.js';
+import { hasAccessToModule } from '../utils/enrollment.js';
 import path from 'path';
 import fs from 'fs';
 
@@ -13,6 +14,41 @@ export async function getWeeks(req, res) {
         console.error('Error in getWeeks controller:', error);
         res.status(500).json({ message: 'Error fetching weeks', error: error.message });
     }
+}
+
+// Direct download/redirect for assignment question file
+export async function downloadAssignmentFile(req, res) {
+  try {
+    const assignmentId = parseInt(req.params.assignment_id, 10);
+    const userId = req.user.user_id;
+    if (isNaN(assignmentId)) {
+      return res.status(400).json({ message: 'Invalid assignment ID' });
+    }
+
+    // Ensure user has access and get assignment details
+    const assignment = await Student.getAssignmentById(assignmentId, userId);
+    if (!assignment || !assignment.question_file_url) {
+      return res.status(404).json({ message: 'Assignment file not found' });
+    }
+
+    const url = assignment.question_file_url;
+    // If Cloudinary or absolute URL, redirect
+    if (url.startsWith('http://') || url.startsWith('https://') || url.includes('cloudinary.com')) {
+      return res.redirect(url);
+    }
+
+    // Fallback: serve local file if exists
+    const filePath = path.join(process.cwd(), url.replace(/^[\/]+/, ''));
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ message: 'File not found on server', filePath });
+    }
+    return res.download(filePath, assignment.question_file_name || undefined);
+  } catch (error) {
+    console.error('Error in downloadAssignmentFile:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ message: 'Error downloading assignment file', error: error.message });
+    }
+  }
 }
 
 export async function getProjectsByWeek(req, res) {
@@ -372,7 +408,6 @@ export async function getResourceDetails(req, res) {
         
         // Check if resource is public or user has access to its module
         if (!resource.is_public && resource.module) {
-            const { hasAccessToModule } = await import('../utils/enrollment.js');
             const hasAccess = await hasAccessToModule(req.user.user_id, resource.module);
             if (!hasAccess) {
                 return res.status(403).json({ message: 'You do not have access to this resource' });
@@ -598,6 +633,8 @@ export async function getStudentAssignments(req, res) {
         const { project_id } = req.query;
         const userId = req.user.user_id;
         
+        console.log(`[getStudentAssignments] Request from user ${userId}, project_id: ${project_id || 'all'}`);
+        
         // Get assignments from your model
         const assignments = await Student.getStudentAssignments(userId, project_id);
 
@@ -608,6 +645,7 @@ export async function getStudentAssignments(req, res) {
         });
     } catch (error) {
         console.error('Error in getStudentAssignments:', error);
+        console.error('Error stack:', error.stack);
         
         // If error is about missing enrollment, return empty array
         if (error.message && (error.message.includes('enrollment') || error.message.includes('No active course'))) {
@@ -620,7 +658,7 @@ export async function getStudentAssignments(req, res) {
         res.status(500).json({
             success: false,
             message: 'Failed to fetch assignments',
-            error: error.message
+            error: process.env.NODE_ENV !== 'production' ? error.message : undefined
         });
     }
 }
@@ -686,6 +724,30 @@ export const submitAssignment = async (req, res) => {
     const { assignment_id } = req.params;
     const student_id = req.user.user_id;
 
+    // Check assignment status and deadline
+    try {
+      const assignment = await AssignmentModel.getAssignmentById(assignment_id);
+      if (!assignment || assignment.is_active === false) {
+        return res.status(400).json({
+          success: false,
+          message: 'This assignment is not available.'
+        });
+      }
+      if (assignment.due_date) {
+        const now = new Date();
+        const due = new Date(assignment.due_date);
+        if (now > due) {
+          return res.status(400).json({
+            success: false,
+            message: `Submission closed. Due was ${due.toLocaleString()}`
+          });
+        }
+      }
+    } catch (checkErr) {
+      console.error('Error checking assignment before submission:', checkErr);
+      // Continue; do not block submission solely due to check error
+    }
+
     if (!req.file) {
       return res.status(400).json({
         success: false,
@@ -707,12 +769,14 @@ export const submitAssignment = async (req, res) => {
 
     const submissionData = {
       assignment_id,
-      student_id,
+      user_id: student_id,
       answer_file_url: fileResult,
-      answer_file_name: req.file.originalname
+      answer_file_name: req.file.originalname,
+      file_size_bytes: req.file.size,
+      status: 'submitted'
     };
 
-    const submission = await AssignmentModel.createSubmission(submissionData);
+    const submission = await Student.createSubmission(submissionData);
 
     res.status(201).json({
       success: true,
@@ -732,6 +796,8 @@ export const submitAssignment = async (req, res) => {
 export async function getMySubmissions(req, res) {
     try {
         const userId = req.user.user_id;
+        console.log(`[getMySubmissions] Request from user ${userId}`);
+        
         const submissions = await Student.getSubmissionsByUser(userId);
 
         // Return empty array if no enrollments (not an error)
@@ -741,6 +807,7 @@ export async function getMySubmissions(req, res) {
         });
     } catch (error) {
         console.error('Error getting submissions:', error);
+        console.error('Error stack:', error.stack);
         
         // If error is about missing enrollment, return empty array
         if (error.message && (error.message.includes('enrollment') || error.message.includes('No active course'))) {
@@ -753,7 +820,7 @@ export async function getMySubmissions(req, res) {
         res.status(500).json({ 
             success: false,
             message: 'Failed to get submissions',
-            error: error.message
+            error: process.env.NODE_ENV !== 'production' ? error.message : undefined
         });
     }
 }

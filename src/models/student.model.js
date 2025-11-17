@@ -35,25 +35,32 @@ export async function getWeeks(user_id) {
         
         const userModule = modules[0];
         const normalizedModule = normalizeModule(userModule);
+        const isMEP = normalizedModule === 'MEP Design';
         console.log(`📚 Fetching weeks for user ${user_id} with module: "${userModule}"`);
         
         // Simple module matching (case-insensitive)
         const userModuleLower = (userModule || '').toLowerCase().trim();
         const normalizedModuleLower = (normalizedModule || '').toLowerCase().trim();
         
-        const weeks = await sql`
-            SELECT w.*
-            FROM weeks w
-            WHERE w.module IS NOT NULL 
-              AND w.module != ''
-              AND (
-                  LOWER(TRIM(w.module)) = ${userModuleLower}
-                  OR LOWER(TRIM(w.module)) = ${normalizedModuleLower}
-                  OR w.module = ${userModule}
-                  OR w.module = ${normalizedModule}
-              )
-            ORDER BY w.order_num NULLS LAST, w.week_id ASC
-        `;
+        const weeks = isMEP
+            ? await sql`
+                SELECT w.*
+                FROM weeks w
+                ORDER BY w.order_num NULLS LAST, w.week_id ASC
+              `
+            : await sql`
+                SELECT w.*
+                FROM weeks w
+                WHERE w.module IS NOT NULL 
+                  AND w.module != ''
+                  AND (
+                      LOWER(TRIM(w.module)) = ${userModuleLower}
+                      OR LOWER(TRIM(w.module)) = ${normalizedModuleLower}
+                      OR w.module = ${userModule}
+                      OR w.module = ${normalizedModule}
+                  )
+                ORDER BY w.order_num NULLS LAST, w.week_id ASC
+              `;
         
         console.log(`✅ Found ${weeks.length} weeks for module "${userModule}"`);
         
@@ -96,19 +103,26 @@ export async function getProjectsByWeek(week_id, user_id) {
         const normalizedModuleLower = (normalizedModule || '').toLowerCase().trim();
         
         // Check if week belongs to a module the user has access to
-        const week = await sql`
-            SELECT w.* FROM weeks w
-            WHERE w.week_id = ${week_id}
-              AND w.module IS NOT NULL 
-              AND w.module != ''
-              AND (
-                  LOWER(TRIM(w.module)) = ${userModuleLower}
-                  OR LOWER(TRIM(w.module)) = ${normalizedModuleLower}
-                  OR w.module = ${userModule}
-                  OR w.module = ${normalizedModule}
-              )
-            LIMIT 1
-        `;
+        const isMEP = normalizedModule === 'MEP Design';
+        const week = isMEP
+            ? await sql`
+                SELECT w.* FROM weeks w
+                WHERE w.week_id = ${week_id}
+                LIMIT 1
+              `
+            : await sql`
+                SELECT w.* FROM weeks w
+                WHERE w.week_id = ${week_id}
+                  AND w.module IS NOT NULL 
+                  AND w.module != ''
+                  AND (
+                      LOWER(TRIM(w.module)) = ${userModuleLower}
+                      OR LOWER(TRIM(w.module)) = ${normalizedModuleLower}
+                      OR w.module = ${userModule}
+                      OR w.module = ${normalizedModule}
+                  )
+                LIMIT 1
+              `;
         
         if (week.length === 0) {
             throw new Error('You do not have access to this course');
@@ -145,19 +159,25 @@ export async function getProjectDetails(project_id, user_id) {
         const normalizedModuleLower = (normalizedModule || '').toLowerCase().trim();
         
         // Check if project belongs to a module the user can access
-        const projects = await sql`
-            SELECT p.* FROM projects p
-            JOIN weeks w ON p.week_id = w.week_id
-            WHERE p.project_id = ${project_id}
-              AND w.module IS NOT NULL 
-              AND w.module != ''
-              AND (
-                  LOWER(TRIM(w.module)) = ${userModuleLower}
-                  OR LOWER(TRIM(w.module)) = ${normalizedModuleLower}
-                  OR w.module = ${userModule}
-                  OR w.module = ${normalizedModule}
-              )
-        `;
+        const isMEP = normalizedModule === 'MEP Design';
+        const projects = isMEP
+            ? await sql`
+                SELECT p.* FROM projects p
+                WHERE p.project_id = ${project_id}
+              `
+            : await sql`
+                SELECT p.* FROM projects p
+                JOIN weeks w ON p.week_id = w.week_id
+                WHERE p.project_id = ${project_id}
+                  AND w.module IS NOT NULL 
+                  AND w.module != ''
+                  AND (
+                      LOWER(TRIM(w.module)) = ${userModuleLower}
+                      OR LOWER(TRIM(w.module)) = ${normalizedModuleLower}
+                      OR w.module = ${userModule}
+                      OR w.module = ${normalizedModule}
+                  )
+              `;
         
         if (projects.length === 0) {
             throw new Error('You do not have access to this project');
@@ -197,34 +217,55 @@ export async function getAllProjects(user_id) {
         const normalizedModuleLower = (normalizedModule || '').toLowerCase().trim();
         
         // Filter projects by enrolled modules
-        let projects = await sql`
-            SELECT
-                p.*,
-                w.title as week_title,
-                w.order_num as week_order,
-                w.module as week_module,
-                COUNT(l.lesson_id) as total_lessons,
-                COUNT(CASE WHEN pr.completed = true THEN 1 END) as completed_lessons,
-                CASE
-                    WHEN COUNT(l.lesson_id) > 0 THEN
-                        ROUND((COUNT(CASE WHEN pr.completed = true THEN 1 END) * 100.0 / COUNT(l.lesson_id)), 2)
-                    ELSE 0
-                END as completion_percentage
-            FROM projects p
-            JOIN weeks w ON p.week_id = w.week_id
-            LEFT JOIN lessons l ON p.project_id = l.project_id
-            LEFT JOIN progress pr ON l.lesson_id = pr.lesson_id AND pr.user_id = ${user_id}
-            WHERE w.module IS NOT NULL 
-              AND w.module != ''
-              AND (
-                  LOWER(TRIM(w.module)) = ${userModuleLower}
-                  OR LOWER(TRIM(w.module)) = ${normalizedModuleLower}
-                  OR w.module = ${userModule}
-                  OR w.module = ${normalizedModule}
-              )
-            GROUP BY p.project_id, w.title, w.order_num, w.module
-            ORDER BY w.order_num, p.order_num;
-        `;
+        let projects = (normalizedModule === 'MEP Design')
+            ? await sql`
+                SELECT
+                    p.*,
+                    w.title as week_title,
+                    w.order_num as week_order,
+                    w.module as week_module,
+                    COUNT(l.lesson_id) as total_lessons,
+                    COUNT(CASE WHEN pr.completed = true THEN 1 END) as completed_lessons,
+                    CASE
+                        WHEN COUNT(l.lesson_id) > 0 THEN
+                            ROUND((COUNT(CASE WHEN pr.completed = true THEN 1 END) * 100.0 / COUNT(l.lesson_id)), 2)
+                        ELSE 0
+                    END as completion_percentage
+                FROM projects p
+                JOIN weeks w ON p.week_id = w.week_id
+                LEFT JOIN lessons l ON p.project_id = l.project_id
+                LEFT JOIN progress pr ON l.lesson_id = pr.lesson_id AND pr.user_id = ${user_id}
+                GROUP BY p.project_id, w.title, w.order_num, w.module
+                ORDER BY w.order_num, p.order_num;
+              `
+            : await sql`
+                SELECT
+                    p.*,
+                    w.title as week_title,
+                    w.order_num as week_order,
+                    w.module as week_module,
+                    COUNT(l.lesson_id) as total_lessons,
+                    COUNT(CASE WHEN pr.completed = true THEN 1 END) as completed_lessons,
+                    CASE
+                        WHEN COUNT(l.lesson_id) > 0 THEN
+                            ROUND((COUNT(CASE WHEN pr.completed = true THEN 1 END) * 100.0 / COUNT(l.lesson_id)), 2)
+                        ELSE 0
+                    END as completion_percentage
+                FROM projects p
+                JOIN weeks w ON p.week_id = w.week_id
+                LEFT JOIN lessons l ON p.project_id = l.project_id
+                LEFT JOIN progress pr ON l.lesson_id = pr.lesson_id AND pr.user_id = ${user_id}
+                WHERE w.module IS NOT NULL 
+                  AND w.module != ''
+                  AND (
+                      LOWER(TRIM(w.module)) = ${userModuleLower}
+                      OR LOWER(TRIM(w.module)) = ${normalizedModuleLower}
+                      OR w.module = ${userModule}
+                      OR w.module = ${normalizedModule}
+                  )
+                GROUP BY p.project_id, w.title, w.order_num, w.module
+                ORDER BY w.order_num, p.order_num;
+              `;
         
         console.log(`✅ Found ${projects.length} projects for module "${userModule}"`);
         
@@ -263,20 +304,26 @@ export async function getLessonsByProject(project_id, user_id = null) {
             const normalizedModuleLower = (normalizedModule || '').toLowerCase().trim();
             
             // Verify project belongs to a module the user can access
-            const projectCheck = await sql`
-                SELECT p.project_id FROM projects p
-                JOIN weeks w ON p.week_id = w.week_id
-                WHERE p.project_id = ${project_id}
-                  AND w.module IS NOT NULL 
-                  AND w.module != ''
-                  AND (
-                      LOWER(TRIM(w.module)) = ${userModuleLower}
-                      OR LOWER(TRIM(w.module)) = ${normalizedModuleLower}
-                      OR w.module = ${userModule}
-                      OR w.module = ${normalizedModule}
-                  )
-                LIMIT 1
-            `;
+            const projectCheck = (normalizedModule === 'MEP Design')
+                ? await sql`
+                    SELECT p.project_id FROM projects p
+                    WHERE p.project_id = ${project_id}
+                    LIMIT 1
+                  `
+                : await sql`
+                    SELECT p.project_id FROM projects p
+                    JOIN weeks w ON p.week_id = w.week_id
+                    WHERE p.project_id = ${project_id}
+                      AND w.module IS NOT NULL 
+                      AND w.module != ''
+                      AND (
+                          LOWER(TRIM(w.module)) = ${userModuleLower}
+                          OR LOWER(TRIM(w.module)) = ${normalizedModuleLower}
+                          OR w.module = ${userModule}
+                          OR w.module = ${normalizedModule}
+                      )
+                    LIMIT 1
+                  `;
             
             if (projectCheck.length === 0) {
                 throw new Error('You do not have access to lessons in this project');
@@ -284,12 +331,122 @@ export async function getLessonsByProject(project_id, user_id = null) {
         }
     }
     
-    return await sql`SELECT * FROM lessons WHERE project_id = ${project_id} ORDER BY order_num;`;
+    const lessons = await sql`
+        SELECT
+            l.*,
+            COALESCE(file_data.files, '[]'::json) AS files_json,
+            file_data.file_url AS primary_file_url,
+            file_data.image_url AS primary_image_url,
+            file_data.video_url AS primary_video_url
+        FROM lessons l
+        LEFT JOIN LATERAL (
+            SELECT
+                json_agg(
+                    json_build_object(
+                        'file_id', lf.file_id,
+                        'file_url', lf.file_url,
+                        'file_name', lf.file_name,
+                        'file_type', lf.file_type,
+                        'file_size_bytes', lf.file_size_bytes,
+                        'uploaded_at', lf.uploaded_at
+                    )
+                    ORDER BY lf.uploaded_at
+                ) AS files,
+                MIN(CASE
+                      WHEN lf.file_type IS NULL
+                        OR (lf.file_type NOT LIKE 'image/%' AND lf.file_type NOT LIKE 'video/%')
+                      THEN lf.file_url
+                    END) AS file_url,
+                MIN(CASE
+                      WHEN lf.file_type LIKE 'image/%'
+                        OR lf.file_type = 'image/remote'
+                      THEN lf.file_url
+                    END) AS image_url,
+                MIN(CASE
+                      WHEN lf.file_type LIKE 'video/%'
+                        OR lf.file_type = 'text/url'
+                      THEN lf.file_url
+                    END) AS video_url
+            FROM lesson_files lf
+            WHERE lf.lesson_id = l.lesson_id
+        ) AS file_data ON TRUE
+        WHERE l.project_id = ${project_id}
+        ORDER BY l.order_num ASC NULLS FIRST, l.created_at ASC
+    `;
+
+    return lessons.map(({
+        files_json,
+        primary_file_url,
+        primary_image_url,
+        primary_video_url,
+        ...lesson
+    }) => ({
+        ...lesson,
+        file_url: lesson.file_url || primary_file_url || null,
+        upload_image: lesson.upload_image || primary_image_url || null,
+        video_url: lesson.video_url || primary_video_url || null,
+        files: files_json
+    }));
 }
 
 export async function getLessonDetails(lesson_id) {
-    const lessons = await sql`SELECT * FROM lessons WHERE lesson_id = ${lesson_id};`;
-    return lessons[0] || null;
+    const lessons = await sql`
+        SELECT
+            l.*,
+            COALESCE(file_data.files, '[]'::json) AS files_json,
+            file_data.file_url AS primary_file_url,
+            file_data.image_url AS primary_image_url,
+            file_data.video_url AS primary_video_url
+        FROM lessons l
+        LEFT JOIN LATERAL (
+            SELECT
+                json_agg(
+                    json_build_object(
+                        'file_id', lf.file_id,
+                        'file_url', lf.file_url,
+                        'file_name', lf.file_name,
+                        'file_type', lf.file_type,
+                        'file_size_bytes', lf.file_size_bytes,
+                        'uploaded_at', lf.uploaded_at
+                    )
+                    ORDER BY lf.uploaded_at
+                ) AS files,
+                MIN(CASE
+                      WHEN lf.file_type IS NULL
+                        OR (lf.file_type NOT LIKE 'image/%' AND lf.file_type NOT LIKE 'video/%')
+                      THEN lf.file_url
+                    END) AS file_url,
+                MIN(CASE
+                      WHEN lf.file_type LIKE 'image/%'
+                        OR lf.file_type = 'image/remote'
+                      THEN lf.file_url
+                    END) AS image_url,
+                MIN(CASE
+                      WHEN lf.file_type LIKE 'video/%'
+                        OR lf.file_type = 'text/url'
+                      THEN lf.file_url
+                    END) AS video_url
+            FROM lesson_files lf
+            WHERE lf.lesson_id = l.lesson_id
+        ) AS file_data ON TRUE
+        WHERE l.lesson_id = ${lesson_id}
+        LIMIT 1
+    `;
+    if (lessons.length === 0) return null;
+    const {
+        files_json,
+        primary_file_url,
+        primary_image_url,
+        primary_video_url,
+        ...lesson
+    } = lessons[0];
+    return {
+        ...lesson,
+        file_url: lesson.file_url || primary_file_url || null,
+        upload_image: lesson.upload_image || primary_image_url || null,
+        video_url: lesson.video_url || primary_video_url || null,
+        files: files_json
+    };
 }
 
 // 3. Mark Lesson Complete
@@ -666,21 +823,10 @@ export async function getResources(type, user_id) {
         // Get user's enrolled modules
         const modules = await getUserEnrolledModules(user_id);
         
-        // If no enrollments, only return public resources
+        // If no enrollments, return empty (no access)
         if (!modules || modules.length === 0 || !modules[0]) {
-            console.log(`⚠️ No enrolled modules for user ${user_id} in getResources - returning public only`);
-            if (type) {
-                return await sql`
-                    SELECT * FROM resources 
-                    WHERE type = ${type} AND is_public = true
-                    ORDER BY title;
-                `;
-            }
-            return await sql`
-                SELECT * FROM resources 
-                WHERE is_public = true
-                ORDER BY type, title;
-            `;
+            console.log(`⚠️ No enrolled modules for user ${user_id} in getResources - returning empty set`);
+            return [];
         }
         
         const userModule = modules[0];
@@ -691,69 +837,157 @@ export async function getResources(type, user_id) {
         const userModuleLower = (userModule || '').toLowerCase().trim();
         const normalizedModuleLower = (normalizedModule || '').toLowerCase().trim();
         
-        if (type) {
-            const resources = await sql`
-                SELECT r.* FROM resources r
-                WHERE r.type = ${type}
-                  AND (
-                      r.is_public = true
-                      OR (
-                          r.module IS NOT NULL 
-                          AND r.module != ''
-                          AND (
-                              LOWER(TRIM(r.module)) = ${userModuleLower}
-                              OR LOWER(TRIM(r.module)) = ${normalizedModuleLower}
-                              OR r.module = ${userModule}
-                              OR r.module = ${normalizedModule}
-                          )
-                      )
-                  )
-                ORDER BY r.title;
-            `;
-            console.log(`✅ Found ${resources.length} resources of type "${type}" for module "${userModule}"`);
-            return resources;
-        }
-        const resources = await sql`
-            SELECT r.* FROM resources r
-            WHERE (
-                r.is_public = true
-                OR (
-                    r.module IS NOT NULL 
-                    AND r.module != ''
-                    AND (
-                        LOWER(TRIM(r.module)) = ${userModuleLower}
-                        OR LOWER(TRIM(r.module)) = ${normalizedModuleLower}
-                        OR r.module = ${userModule}
-                        OR r.module = ${normalizedModule}
+        const isMEP = normalizedModule === 'MEP Design';
+        const whereClause = isMEP
+            ? sql`WHERE 1=1`
+            : sql`
+                WHERE (
+                    r.is_public = true
+                    OR (
+                        r.module IS NOT NULL 
+                        AND r.module != ''
+                        AND (
+                            LOWER(TRIM(r.module)) = ${userModuleLower}
+                            OR LOWER(TRIM(r.module)) = ${normalizedModuleLower}
+                            OR r.module = ${userModule}
+                            OR r.module = ${normalizedModule}
+                        )
                     )
                 )
-            )
-            ORDER BY r.type, r.title;
+            `;
+        const typeClause = type ? sql` AND r.type = ${type}` : sql``;
+
+        const resources = await sql`
+            SELECT
+                r.*,
+                w.title AS week_title,
+                w.order_num AS week_order,
+                COALESCE(file_data.files, '[]'::json) AS files_json,
+                file_data.file_url AS primary_file_url,
+                file_data.image_url AS primary_image_url,
+                file_data.video_url AS primary_video_url
+            FROM resources r
+            LEFT JOIN weeks w ON r.week_id = w.week_id
+            LEFT JOIN LATERAL (
+                SELECT
+                    json_agg(
+                        json_build_object(
+                            'file_id', rf.file_id,
+                            'file_url', rf.file_url,
+                            'file_name', rf.file_name,
+                            'file_type', rf.file_type,
+                            'file_size_bytes', rf.file_size_bytes,
+                            'uploaded_at', rf.uploaded_at
+                        )
+                        ORDER BY rf.uploaded_at
+                    ) AS files,
+                    MIN(CASE
+                          WHEN rf.file_type IS NULL
+                            OR (rf.file_type NOT LIKE 'image/%' AND rf.file_type NOT LIKE 'video/%')
+                          THEN rf.file_url
+                        END) AS file_url,
+                    MIN(CASE
+                          WHEN rf.file_type LIKE 'image/%'
+                            OR rf.file_type = 'image/remote'
+                          THEN rf.file_url
+                        END) AS image_url,
+                    MIN(CASE
+                          WHEN rf.file_type LIKE 'video/%'
+                            OR rf.file_type = 'text/url'
+                          THEN rf.file_url
+                        END) AS video_url
+                FROM resource_files rf
+                WHERE rf.resource_id = r.resource_id
+            ) AS file_data ON TRUE
+            ${whereClause}
+            ${typeClause}
+            ORDER BY COALESCE(w.order_num, 9999), r.created_at DESC
         `;
-        console.log(`✅ Found ${resources.length} resources for module "${userModule}"`);
-        return resources;
+
+        console.log(`✅ Found ${resources.length} resources${type ? ` of type "${type}"` : ''} for module "${userModule}"`);
+
+        return resources.map(({
+            files_json,
+            primary_file_url,
+            primary_image_url,
+            primary_video_url,
+            ...resource
+        }) => ({
+            ...resource,
+            file_url: resource.file_url || primary_file_url || null,
+            image_url: resource.image_url || primary_image_url || null,
+            video_url: resource.video_url || primary_video_url || null,
+            files: files_json
+        }));
     } catch (error) {
         console.error('Error in getResources:', error);
-        // Return public resources only on error
-        if (type) {
-            return await sql`
-                SELECT * FROM resources 
-                WHERE type = ${type} AND is_public = true
-                ORDER BY title;
-            `;
-        }
-        return await sql`
-            SELECT * FROM resources 
-            WHERE is_public = true
-            ORDER BY type, title;
-        `;
+        // On error, return empty set to avoid leaking resources
+        return [];
     }
 }
 
 // --- ADDED THIS NEW FUNCTION FOR RESOURCE DETAILS ---
 export async function getResourceDetails(resource_id) {
-    const resources = await sql`SELECT * FROM resources WHERE resource_id = ${resource_id};`;
-    return resources[0] || null; // Return the first resource or null if not found
+    const resources = await sql`
+        SELECT
+            r.*,
+            w.title AS week_title,
+            w.order_num AS week_order,
+            COALESCE(file_data.files, '[]'::json) AS files_json,
+            file_data.file_url AS primary_file_url,
+            file_data.image_url AS primary_image_url,
+            file_data.video_url AS primary_video_url
+        FROM resources r
+        LEFT JOIN weeks w ON r.week_id = w.week_id
+        LEFT JOIN LATERAL (
+            SELECT
+                json_agg(
+                    json_build_object(
+                        'file_id', rf.file_id,
+                        'file_url', rf.file_url,
+                        'file_name', rf.file_name,
+                        'file_type', rf.file_type,
+                        'file_size_bytes', rf.file_size_bytes,
+                        'uploaded_at', rf.uploaded_at
+                    )
+                    ORDER BY rf.uploaded_at
+                ) AS files,
+                MIN(CASE
+                      WHEN rf.file_type IS NULL
+                        OR (rf.file_type NOT LIKE 'image/%' AND rf.file_type NOT LIKE 'video/%')
+                      THEN rf.file_url
+                    END) AS file_url,
+                MIN(CASE
+                      WHEN rf.file_type LIKE 'image/%'
+                        OR rf.file_type = 'image/remote'
+                      THEN rf.file_url
+                    END) AS image_url,
+                MIN(CASE
+                      WHEN rf.file_type LIKE 'video/%'
+                        OR rf.file_type = 'text/url'
+                      THEN rf.file_url
+                    END) AS video_url
+            FROM resource_files rf
+            WHERE rf.resource_id = r.resource_id
+        ) AS file_data ON TRUE
+        WHERE r.resource_id = ${resource_id}
+        LIMIT 1
+    `;
+    if (resources.length === 0) return null;
+    const {
+        files_json,
+        primary_file_url,
+        primary_image_url,
+        primary_video_url,
+        ...resource
+    } = resources[0];
+    return {
+        ...resource,
+        file_url: resource.file_url || primary_file_url || null,
+        image_url: resource.image_url || primary_image_url || null,
+        video_url: resource.video_url || primary_video_url || null,
+        files: files_json
+    };
 }
 // ----------------------------------------------------
 
@@ -820,52 +1054,92 @@ export async function getProjectsByWeekDashboard(user_id) {
         const normalizedModuleLower = (normalizedModule || '').toLowerCase().trim();
         
         // Filter weeks by enrolled modules
-        const result = await sql`
-            SELECT
-                w.week_id,
-                w.title as week_title,
-                w.order_num,
-                json_agg(
-                    json_build_object(
-                        'project_id', p.project_id,
-                        'title', p.title,
-                        'short_description', p.short_description,
-                        'image_url', p.image_url,
-                        'video_url', p.video_url,
-                        'order_num', p.order_num,
-                        'total_lessons', COALESCE(lesson_counts.total_lessons, 0),
-                        'completed_lessons', COALESCE(lesson_counts.completed_lessons, 0),
-                        'completion_percentage', COALESCE(lesson_counts.completion_percentage, 0)
-                    )
-                    ORDER BY p.order_num
-                ) as projects
-            FROM weeks w
-            LEFT JOIN projects p ON w.week_id = p.week_id
-            LEFT JOIN (
+        const isMEP = normalizedModule === 'MEP Design';
+        const result = isMEP
+            ? await sql`
                 SELECT
-                    l.project_id,
-                    COUNT(l.lesson_id) as total_lessons,
-                    COUNT(CASE WHEN pr.completed = true THEN 1 END) as completed_lessons,
-                    CASE
-                        WHEN COUNT(l.lesson_id) > 0 THEN
-                            ROUND((COUNT(CASE WHEN pr.completed = true THEN 1 END) * 100.0 / COUNT(l.lesson_id)), 2)
-                        ELSE 0
-                    END as completion_percentage
-                FROM lessons l
-                LEFT JOIN progress pr ON l.lesson_id = pr.lesson_id AND pr.user_id = ${user_id}
-                GROUP BY l.project_id
-            ) lesson_counts ON p.project_id = lesson_counts.project_id
-            WHERE w.module IS NOT NULL 
-              AND w.module != ''
-              AND (
-                  LOWER(TRIM(w.module)) = ${userModuleLower}
-                  OR LOWER(TRIM(w.module)) = ${normalizedModuleLower}
-                  OR w.module = ${userModule}
-                  OR w.module = ${normalizedModule}
-              )
-            GROUP BY w.week_id, w.title, w.order_num
-            ORDER BY w.order_num;
-        `;
+                    w.week_id,
+                    w.title as week_title,
+                    w.order_num,
+                    json_agg(
+                        json_build_object(
+                            'project_id', p.project_id,
+                            'title', p.title,
+                            'short_description', p.short_description,
+                            'image_url', p.image_url,
+                            'video_url', p.video_url,
+                            'order_num', p.order_num,
+                            'total_lessons', COALESCE(lesson_counts.total_lessons, 0),
+                            'completed_lessons', COALESCE(lesson_counts.completed_lessons, 0),
+                            'completion_percentage', COALESCE(lesson_counts.completion_percentage, 0)
+                        )
+                        ORDER BY p.order_num
+                    ) as projects
+                FROM weeks w
+                LEFT JOIN projects p ON w.week_id = p.week_id
+                LEFT JOIN (
+                    SELECT
+                        l.project_id,
+                        COUNT(l.lesson_id) as total_lessons,
+                        COUNT(CASE WHEN pr.completed = true THEN 1 END) as completed_lessons,
+                        CASE
+                            WHEN COUNT(l.lesson_id) > 0 THEN
+                                ROUND((COUNT(CASE WHEN pr.completed = true THEN 1 END) * 100.0 / COUNT(l.lesson_id)), 2)
+                            ELSE 0
+                        END as completion_percentage
+                    FROM lessons l
+                    LEFT JOIN progress pr ON l.lesson_id = pr.lesson_id AND pr.user_id = ${user_id}
+                    GROUP BY l.project_id
+                ) lesson_counts ON p.project_id = lesson_counts.project_id
+                GROUP BY w.week_id, w.title, w.order_num
+                ORDER BY w.order_num;
+              `
+            : await sql`
+                SELECT
+                    w.week_id,
+                    w.title as week_title,
+                    w.order_num,
+                    json_agg(
+                        json_build_object(
+                            'project_id', p.project_id,
+                            'title', p.title,
+                            'short_description', p.short_description,
+                            'image_url', p.image_url,
+                            'video_url', p.video_url,
+                            'order_num', p.order_num,
+                            'total_lessons', COALESCE(lesson_counts.total_lessons, 0),
+                            'completed_lessons', COALESCE(lesson_counts.completed_lessons, 0),
+                            'completion_percentage', COALESCE(lesson_counts.completion_percentage, 0)
+                        )
+                        ORDER BY p.order_num
+                    ) as projects
+                FROM weeks w
+                LEFT JOIN projects p ON w.week_id = p.week_id
+                LEFT JOIN (
+                    SELECT
+                        l.project_id,
+                        COUNT(l.lesson_id) as total_lessons,
+                        COUNT(CASE WHEN pr.completed = true THEN 1 END) as completed_lessons,
+                        CASE
+                            WHEN COUNT(l.lesson_id) > 0 THEN
+                                ROUND((COUNT(CASE WHEN pr.completed = true THEN 1 END) * 100.0 / COUNT(l.lesson_id)), 2)
+                            ELSE 0
+                        END as completion_percentage
+                    FROM lessons l
+                    LEFT JOIN progress pr ON l.lesson_id = pr.lesson_id AND pr.user_id = ${user_id}
+                    GROUP BY l.project_id
+                ) lesson_counts ON p.project_id = lesson_counts.project_id
+                WHERE w.module IS NOT NULL 
+                  AND w.module != ''
+                  AND (
+                      LOWER(TRIM(w.module)) = ${userModuleLower}
+                      OR LOWER(TRIM(w.module)) = ${normalizedModuleLower}
+                      OR w.module = ${userModule}
+                      OR w.module = ${normalizedModule}
+                  )
+                GROUP BY w.week_id, w.title, w.order_num
+                ORDER BY w.order_num;
+              `;
         
         return result;
     } catch (error) {
@@ -1791,7 +2065,13 @@ export const getActiveAssignmentsForStudent = async (userId) => {
 export async function getStudentAssignments(userId, projectId = null) {
     try {
         // Get user's enrolled modules
-        const modules = await getUserEnrolledModules(userId);
+        let modules;
+        try {
+            modules = await getUserEnrolledModules(userId);
+        } catch (enrollError) {
+            console.error(`Error getting enrolled modules for user ${userId}:`, enrollError);
+            return [];
+        }
         
         if (!modules || modules.length === 0 || !modules[0]) {
             console.log(`No enrolled modules found for user ${userId}`);
@@ -1799,17 +2079,47 @@ export async function getStudentAssignments(userId, projectId = null) {
         }
         
         const userModule = modules[0];
+        if (!userModule || typeof userModule !== 'string') {
+            console.error(`Invalid module value for user ${userId}:`, userModule);
+            return [];
+        }
+        
         const normalizedModule = normalizeModule(userModule);
         console.log(`Fetching assignments for user ${userId} in module: ${userModule}`);
         
         // Simple module matching (case-insensitive)
         const userModuleLower = (userModule || '').toLowerCase().trim();
         const normalizedModuleLower = (normalizedModule || '').toLowerCase().trim();
+        const isMEP = normalizedModule === 'MEP Design';
         
         // Build the main query with proper SQL construction
         let query;
         if (projectId) {
-            query = sql`
+            query = isMEP
+            ? sql`
+                SELECT 
+                    a.*,
+                    COALESCE(
+                        (SELECT p.title FROM projects p WHERE p.project_id = a.project_id),
+                        (SELECT p.title FROM lessons l JOIN projects p ON l.project_id = p.project_id WHERE l.lesson_id = a.lesson_id)
+                    ) as project_title,
+                    CASE 
+                        WHEN EXISTS (
+                            SELECT 1 FROM assignment_submissions s 
+                            WHERE s.assignment_id = a.assignment_id AND s.user_id = ${userId}
+                        ) THEN true 
+                        ELSE false 
+                    END as has_submitted
+                FROM assignments a
+                WHERE a.is_active = true
+                    AND (
+                        a.project_id = ${projectId} 
+                        OR 
+                        EXISTS (SELECT 1 FROM lessons l WHERE l.lesson_id = a.lesson_id AND l.project_id = ${projectId})
+                    )
+                ORDER BY a.due_date ASC NULLS LAST, a.created_at DESC
+            `
+            : sql`
                 SELECT 
                     a.*,
                     COALESCE(
@@ -1863,7 +2173,26 @@ export async function getStudentAssignments(userId, projectId = null) {
                 ORDER BY a.due_date ASC NULLS LAST, a.created_at DESC
             `;
         } else {
-            query = sql`
+            query = isMEP
+            ? sql`
+                SELECT 
+                    a.*,
+                    COALESCE(
+                        (SELECT p.title FROM projects p WHERE p.project_id = a.project_id),
+                        (SELECT p.title FROM lessons l JOIN projects p ON l.project_id = p.project_id WHERE l.lesson_id = a.lesson_id)
+                    ) as project_title,
+                    CASE 
+                        WHEN EXISTS (
+                            SELECT 1 FROM assignment_submissions s 
+                            WHERE s.assignment_id = a.assignment_id AND s.user_id = ${userId}
+                        ) THEN true 
+                        ELSE false 
+                    END as has_submitted
+                FROM assignments a
+                WHERE a.is_active = true
+                ORDER BY a.due_date ASC NULLS LAST, a.created_at DESC
+            `
+            : sql`
                 SELECT 
                     a.*,
                     COALESCE(
@@ -1932,9 +2261,22 @@ export async function getAssignmentById(assignmentId, userId) {
         }
         
         const userModule = modules[0];
+        const normalizedModule = normalizeModule(userModule);
+        const isMEP = normalizedModule === 'MEP Design';
         
         // Check if assignment belongs to accessible module - handle both project and lesson links
-        const result = await sql`
+        const result = isMEP
+          ? await sql`
+            SELECT 
+                a.*,
+                COALESCE(
+                    (SELECT p.title FROM projects p WHERE p.project_id = a.project_id),
+                    (SELECT p.title FROM lessons l JOIN projects p ON l.project_id = p.project_id WHERE l.lesson_id = a.lesson_id)
+                ) as project_title
+            FROM assignments a
+            WHERE a.assignment_id = ${assignmentId}
+          `
+          : await sql`
             SELECT 
                 a.*,
                 COALESCE(
@@ -1959,7 +2301,7 @@ export async function getAssignmentById(assignmentId, userId) {
                       WHERE l.lesson_id = a.lesson_id AND w.module = ${userModule}
                   ))
               )
-        `;
+          `;
         
         if (result.length === 0) {
             throw new Error('You do not have access to this assignment');
@@ -2052,7 +2394,13 @@ export async function getSubmissionById(submissionId) {
 export async function getSubmissionsByUser(userId) {
     try {
         // Get user's enrolled modules
-        const modules = await getUserEnrolledModules(userId);
+        let modules;
+        try {
+            modules = await getUserEnrolledModules(userId);
+        } catch (enrollError) {
+            console.error(`Error getting enrolled modules for user ${userId}:`, enrollError);
+            return [];
+        }
         
         if (!modules || modules.length === 0 || !modules[0]) {
             console.log(`No enrolled modules found for user ${userId} in submissions query`);
@@ -2060,15 +2408,44 @@ export async function getSubmissionsByUser(userId) {
         }
         
         const userModule = modules[0];
+        if (!userModule || typeof userModule !== 'string') {
+            console.error(`Invalid module value for user ${userId}:`, userModule);
+            return [];
+        }
+        
         const normalizedModule = normalizeModule(userModule);
         console.log(`Fetching submissions for user ${userId} in module: ${userModule}`);
         
         // Simple module matching (case-insensitive)
         const userModuleLower = (userModule || '').toLowerCase().trim();
         const normalizedModuleLower = (normalizedModule || '').toLowerCase().trim();
+        const isMEP = normalizedModule === 'MEP Design';
         
         // Filter submissions by enrolled modules - handle both project and lesson linked assignments
-        const result = await sql`
+        const result = isMEP
+          ? await sql`
+            SELECT 
+                s.submission_id,
+                s.assignment_id,
+                s.answer_file_name,
+                s.file_size_bytes,
+                s.submitted_at,
+                s.grade,
+                s.feedback,
+                s.status,
+                a.title as assignment_title,
+                a.description as assignment_description,
+                COALESCE(
+                    (SELECT p.title FROM projects p WHERE p.project_id = a.project_id),
+                    (SELECT p.title FROM lessons l JOIN projects p ON l.project_id = p.project_id WHERE l.lesson_id = a.lesson_id)
+                ) as project_title,
+                ${userModule} as module
+            FROM assignment_submissions s
+            JOIN assignments a ON s.assignment_id = a.assignment_id
+            WHERE s.user_id = ${userId}
+            ORDER BY s.submitted_at DESC
+          `
+          : await sql`
             SELECT 
                 s.submission_id,
                 s.assignment_id,
@@ -2121,7 +2498,7 @@ export async function getSubmissionsByUser(userId) {
                   ))
               )
             ORDER BY s.submitted_at DESC
-        `;
+          `;
         
         console.log(`Found ${result.length} submissions for user ${userId} in module ${userModule}`);
         return result;
@@ -2141,8 +2518,28 @@ export async function getAllModuleContent(user_id) {
         console.log(`\n🔍 [getAllModuleContent] Starting for user_id: ${user_id}`);
         
         // Get user's enrolled modules
-        const modules = await getUserEnrolledModules(user_id);
-        console.log(`📋 [getAllModuleContent] getUserEnrolledModules returned:`, modules);
+        let modules;
+        try {
+            modules = await getUserEnrolledModules(user_id);
+            console.log(`📋 [getAllModuleContent] getUserEnrolledModules returned:`, modules);
+        } catch (enrollError) {
+            console.error(`❌ [getAllModuleContent] Error getting enrolled modules:`, enrollError);
+            console.error(`Error stack:`, enrollError.stack);
+            return {
+                success: false,
+                message: 'Error fetching user enrollment information',
+                error: enrollError.message,
+                data: {
+                    weeks: [],
+                    projects: [],
+                    lessons: [],
+                    quizzes: [],
+                    assignments: [],
+                    resources: [],
+                    module: null
+                }
+            };
+        }
         
         if (!modules || modules.length === 0 || !modules[0]) {
             console.warn(`⚠️ [getAllModuleContent] No enrolled modules found for user ${user_id}`);
@@ -2179,6 +2576,24 @@ export async function getAllModuleContent(user_id) {
         }
         
         const userModule = modules[0];
+        if (!userModule || typeof userModule !== 'string') {
+            console.error(`❌ [getAllModuleContent] Invalid module value:`, userModule);
+            return {
+                success: false,
+                message: 'Invalid module information found',
+                error: 'Module value is not a valid string',
+                data: {
+                    weeks: [],
+                    projects: [],
+                    lessons: [],
+                    quizzes: [],
+                    assignments: [],
+                    resources: [],
+                    module: null
+                }
+            };
+        }
+        
         const normalizedModule = normalizeModule(userModule);
         
         // Simple module matching (case-insensitive)
@@ -2191,10 +2606,24 @@ export async function getAllModuleContent(user_id) {
         console.log(`   - User Module Lower: "${userModuleLower}"`);
         console.log(`   - Normalized Module Lower: "${normalizedModuleLower}"`);
         
-        // Fetch all content types in parallel
+        // Fetch all content types in parallel with MEP super-access
         const [weeks, projects, lessons, quizzes, assignments, resources] = await Promise.all([
             // Weeks
-            sql`
+            isMEP ? sql`
+                SELECT 
+                    w.week_id,
+                    w.title,
+                    w.description,
+                    w.order_num,
+                    w.module,
+                    w.meet_link,
+                    w.meet_description,
+                    COUNT(DISTINCT p.project_id) as project_count
+                FROM weeks w
+                LEFT JOIN projects p ON p.week_id = w.week_id
+                GROUP BY w.week_id, w.title, w.description, w.order_num, w.module, w.meet_link, w.meet_description
+                ORDER BY w.order_num NULLS LAST, w.week_id
+            ` : sql`
                 SELECT 
                     w.week_id,
                     w.title,
@@ -2217,9 +2646,26 @@ export async function getAllModuleContent(user_id) {
                 GROUP BY w.week_id, w.title, w.description, w.order_num, w.module, w.meet_link, w.meet_description
                 ORDER BY w.order_num NULLS LAST, w.week_id
             `,
-            
+
             // Projects
-            sql`
+            isMEP ? sql`
+                SELECT 
+                    p.project_id,
+                    p.title,
+                    p.short_description,
+                    p.image_url,
+                    p.video_url,
+                    p.order_num,
+                    p.module,
+                    w.week_id,
+                    w.title as week_title,
+                    COUNT(DISTINCT l.lesson_id) as lesson_count
+                FROM projects p
+                LEFT JOIN weeks w ON p.week_id = w.week_id
+                LEFT JOIN lessons l ON l.project_id = p.project_id
+                GROUP BY p.project_id, p.title, p.short_description, p.image_url, p.video_url, p.order_num, p.module, w.week_id, w.title
+                ORDER BY w.order_num NULLS LAST, p.order_num NULLS LAST
+            ` : sql`
                 SELECT 
                     p.project_id,
                     p.title,
@@ -2255,9 +2701,26 @@ export async function getAllModuleContent(user_id) {
                 GROUP BY p.project_id, p.title, p.short_description, p.image_url, p.video_url, p.order_num, p.module, w.week_id, w.title
                 ORDER BY w.order_num NULLS LAST, p.order_num NULLS LAST
             `,
-            
+
             // Lessons
-            sql`
+            isMEP ? sql`
+                SELECT 
+                    l.lesson_id,
+                    l.title,
+                    l.content,
+                    l.file_url,
+                    l.video_url,
+                    l.order_num,
+                    l.module,
+                    p.project_id,
+                    p.title as project_title,
+                    w.week_id,
+                    w.title as week_title
+                FROM lessons l
+                LEFT JOIN projects p ON l.project_id = p.project_id
+                LEFT JOIN weeks w ON p.week_id = w.week_id
+                ORDER BY w.order_num NULLS LAST, p.order_num NULLS LAST, l.order_num NULLS LAST
+            ` : sql`
                 SELECT 
                     l.lesson_id,
                     l.title,
@@ -2301,9 +2764,30 @@ export async function getAllModuleContent(user_id) {
                 )
                 ORDER BY w.order_num NULLS LAST, p.order_num NULLS LAST, l.order_num NULLS LAST
             `,
-            
+
             // Quizzes
-            sql`
+            isMEP ? sql`
+                SELECT 
+                    q.quiz_id,
+                    q.title,
+                    q.description,
+                    q.start_time,
+                    q.end_time,
+                    q.time_limit,
+                    q.project_id,
+                    q.lesson_id,
+                    q.module,
+                    p.title as project_title,
+                    l.title as lesson_title,
+                    w.week_id,
+                    w.title as week_title
+                FROM quizzes q
+                LEFT JOIN projects p ON q.project_id = p.project_id
+                LEFT JOIN lessons l ON q.lesson_id = l.lesson_id
+                LEFT JOIN projects p2 ON l.project_id = p2.project_id
+                LEFT JOIN weeks w ON COALESCE(p.week_id, p2.week_id) = w.week_id
+                ORDER BY q.start_time NULLS LAST, q.quiz_id
+            ` : sql`
                 SELECT 
                     q.quiz_id,
                     q.title,
@@ -2359,9 +2843,37 @@ export async function getAllModuleContent(user_id) {
                 )
                 ORDER BY q.start_time NULLS LAST, q.quiz_id
             `,
-            
-            // Assignments (both project-linked and lesson-linked)
-            sql`
+
+            // Assignments
+            isMEP ? sql`
+                SELECT 
+                    a.assignment_id,
+                    a.title,
+                    a.description,
+                    a.question_file_url,
+                    a.due_date,
+                    a.project_id,
+                    a.lesson_id,
+                    a.module,
+                    a.created_at,
+                    a.max_file_size_mb,
+                    a.allowed_file_types,
+                    p.title as project_title,
+                    l.title as lesson_title,
+                    w.week_id,
+                    w.title as week_title,
+                    CASE 
+                        WHEN a.project_id IS NOT NULL THEN 'project'
+                        WHEN a.lesson_id IS NOT NULL THEN 'lesson'
+                    END as assignment_type
+                FROM assignments a
+                LEFT JOIN projects p ON a.project_id = p.project_id
+                LEFT JOIN lessons l ON a.lesson_id = l.lesson_id
+                LEFT JOIN projects p2 ON l.project_id = p2.project_id
+                LEFT JOIN weeks w ON COALESCE(p.week_id, p2.week_id) = w.week_id
+                WHERE a.is_active = true
+                ORDER BY a.due_date NULLS LAST, a.created_at DESC
+            ` : sql`
                 SELECT 
                     a.assignment_id,
                     a.title,
@@ -2424,9 +2936,25 @@ export async function getAllModuleContent(user_id) {
                   )
                 ORDER BY a.due_date NULLS LAST, a.created_at DESC
             `,
-            
-            // Resources (public + module-specific)
-            sql`
+
+            // Resources
+            isMEP ? sql`
+                SELECT 
+                    r.resource_id,
+                    r.title,
+                    r.type,
+                    r.content,
+                    r.file_url,
+                    r.module,
+                    r.is_public,
+                    CASE 
+                        WHEN r.is_public = true THEN 'public'
+                        WHEN r.module IS NOT NULL AND r.module != '' THEN 'module_specific'
+                        ELSE 'general'
+                    END as resource_category
+                FROM resources r
+                ORDER BY r.type, r.title
+            ` : sql`
                 SELECT 
                     r.resource_id,
                     r.title,

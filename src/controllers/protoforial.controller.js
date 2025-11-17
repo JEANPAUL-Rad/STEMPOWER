@@ -156,9 +156,22 @@ export async function uploadSupportDocument(req, res) {
 export async function getAllProtoforial(req, res) {
     try {
         const protoforials = await Proto.getAllProtoforial();
-        res.json({ success: true, data: protoforials });
+        res.json({ success: true, data: protoforials || [] });
     } catch (error) {
-        res.status(400).json({ success: false, message: error.message });
+        console.error('Error in getAllProtoforial controller:', error);
+        // Handle connection pool errors gracefully
+        if (error.code === 'XX000' || error.message?.includes('MaxClientsInSessionMode') || error.code === 'CONNECT_TIMEOUT') {
+            return res.status(503).json({ 
+                success: false,
+                message: 'Service temporarily unavailable. Please try again in a moment.',
+                error: 'Database connection pool exhausted'
+            });
+        }
+        res.status(500).json({ 
+            success: false, 
+            message: error.message || 'Error fetching protoforials',
+            error: process.env.NODE_ENV !== 'production' ? error.message : undefined
+        });
     }
 }
 

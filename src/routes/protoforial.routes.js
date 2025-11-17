@@ -1,6 +1,7 @@
 import express from 'express';
 import * as controller from '../controllers/protoforial.controller.js';
 import upload from '../middleware/upload.js';
+import { authenticate, requireAdmin } from '../middleware/auth.middleware.js';
 
 const router = express.Router();
 
@@ -19,11 +20,11 @@ router.post('/protoforial/:proto_id/support-document', upload.array('documents',
 router.get('/protoforial/:proto_id/documents', controller.listDocuments);
 router.get('/protoforial/document/:document_id/download', controller.downloadDocument);
 
-// Admin: update payment status (integrate real admin middleware later)
-router.patch('/protoforial/:proto_id/payment', controller.adminSetPaymentStatus);
+// Admin: update payment status
+router.patch('/protoforial/:proto_id/payment', authenticate, requireAdmin, controller.adminSetPaymentStatus);
 
 // Admin: get all protoforial entries
-router.get('/admin/protoforial', controller.getAllProtoforial);
+router.get('/admin/protoforial', authenticate, requireAdmin, controller.getAllProtoforial);
 
 export default router;
 

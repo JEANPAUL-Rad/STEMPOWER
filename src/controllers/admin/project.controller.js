@@ -13,19 +13,22 @@ export async function createProject(req, res) {
     // 1. req.file (if uploaded as multipart)
     // 2. req.body.image_url (if uploaded separately first)
     let finalImageUrl = null;
+    // Normalize common invalid string values
+    const normalizedBodyImage = typeof image_url === 'string' ? image_url.trim() : image_url;
+    const isInvalidString = normalizedBodyImage === 'undefined' || normalizedBodyImage === 'null' || normalizedBodyImage === '';
     
     if (req.file) {
       // If uploaded as multipart, store just the filename
       finalImageUrl = req.file.filename;
-    } else if (image_url) {
+    } else if (normalizedBodyImage && !isInvalidString) {
       // If uploaded separately and sent in body, extract just the filename
       // Handle cases like "/uploads/filename.jpg" or "filename.jpg"
-      if (image_url.startsWith('/uploads/')) {
-        finalImageUrl = image_url.replace('/uploads/', '');
-      } else if (image_url.includes('/uploads/')) {
-        finalImageUrl = image_url.split('/uploads/')[1];
+      if (normalizedBodyImage.startsWith('/uploads/')) {
+        finalImageUrl = normalizedBodyImage.replace('/uploads/', '');
+      } else if (normalizedBodyImage.includes('/uploads/')) {
+        finalImageUrl = normalizedBodyImage.split('/uploads/')[1];
       } else {
-        finalImageUrl = image_url;
+        finalImageUrl = normalizedBodyImage;
       }
     }
 
@@ -51,19 +54,24 @@ export async function updateProject(req, res) {
     
     // Handle image_url for updates too
     let finalImageUrl = image_url;
+    const normalizedBodyImage = typeof image_url === 'string' ? image_url.trim() : image_url;
+    const isInvalidString = normalizedBodyImage === 'undefined' || normalizedBodyImage === 'null' || normalizedBodyImage === '';
     
     if (req.file) {
       // If uploaded as multipart, store just the filename
       finalImageUrl = req.file.filename;
-    } else if (image_url) {
+    } else if (normalizedBodyImage && !isInvalidString) {
       // If uploaded separately and sent in body, extract just the filename
-      if (image_url.startsWith('/uploads/')) {
-        finalImageUrl = image_url.replace('/uploads/', '');
-      } else if (image_url.includes('/uploads/')) {
-        finalImageUrl = image_url.split('/uploads/')[1];
+      if (normalizedBodyImage.startsWith('/uploads/')) {
+        finalImageUrl = normalizedBodyImage.replace('/uploads/', '');
+      } else if (normalizedBodyImage.includes('/uploads/')) {
+        finalImageUrl = normalizedBodyImage.split('/uploads/')[1];
       } else {
-        finalImageUrl = image_url;
+        finalImageUrl = normalizedBodyImage;
       }
+    } else {
+      // Explicitly clear invalid string values to null
+      finalImageUrl = null;
     }
 
     const updated = await ProjectModel.updateProject(req.params.project_id, {
