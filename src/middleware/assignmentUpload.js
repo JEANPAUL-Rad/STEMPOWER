@@ -1,7 +1,7 @@
 // middleware/assignmentUpload.js
+import fs from 'fs';
 import multer from 'multer';
 import path from 'path';
-import fs from 'fs';
 
 // Ensure directories exist
 const ensureDirectoryExists = (dirPath) => {
@@ -71,12 +71,36 @@ const createFileFilter = (allowedExtensions, allowedMimeTypes) => {
       return cb(new Error(`File type ${extension} not allowed. Allowed types: ${allowedExtensions.join(', ')}`), false);
     }
 
-    // Check if mime type is allowed
-    if (!allowedMimeTypes.includes(file.mimetype)) {
-      return cb(new Error(`File type ${file.mimetype} not allowed`), false);
+    // More lenient MIME type check - allow if extension matches OR mime type matches
+    // This handles cases where browsers send different MIME types for the same file
+    const mimeTypeMatches = allowedMimeTypes.includes(file.mimetype);
+    const extensionMatches = allowedExtensions.includes(extension);
+    
+    // Special handling for common Office file MIME type variations
+    const isOfficeFile = extension === '.xls' || extension === '.xlsx' || 
+                        extension === '.doc' || extension === '.docx' ||
+                        extension === '.ppt' || extension === '.pptx';
+    
+    // Allow if extension is valid AND (mime type matches OR it's an Office file with any Office-related mime type)
+    if (extensionMatches && (mimeTypeMatches || (isOfficeFile && (
+      file.mimetype.includes('spreadsheet') || 
+      file.mimetype.includes('wordprocessing') || 
+      file.mimetype.includes('presentation') ||
+      file.mimetype.includes('ms-excel') ||
+      file.mimetype.includes('msword') ||
+      file.mimetype.includes('ms-powerpoint') ||
+      file.mimetype === 'application/octet-stream' // Some browsers send this for Office files
+    )))) {
+      return cb(null, true);
     }
 
-    cb(null, true);
+    // If extension matches but mime type doesn't, still allow (lenient approach)
+    if (extensionMatches) {
+      console.warn(`⚠️ MIME type mismatch for ${file.originalname}: ${file.mimetype}, but extension ${extension} is allowed. Proceeding...`);
+      return cb(null, true);
+    }
+
+    return cb(new Error(`File type ${file.mimetype} (${extension}) not allowed`), false);
   };
 };
 
@@ -89,14 +113,20 @@ export const uploadAssignment = multer({
   fileFilter: createFileFilter(assignmentAllowedExtensions, assignmentAllowedMimeTypes)
 }).array('files', 10);
 
-// Middleware for uploading assignment submissions (students)
-export const uploadSubmission = multer({
+// Internal uploader instance reused for submissions
+const submissionUploader = multer({
   storage: submissionStorage,
   limits: {
     fileSize: 50 * 1024 * 1024, // 50MB limit
   },
   fileFilter: createFileFilter(submissionAllowedExtensions, submissionAllowedMimeTypes)
-}).array('files', 10);
+});
+
+// Middleware for uploading assignment submissions (students)
+// Accepts both "files" (array) and "file" (single) field names
+export const uploadSubmission = (req, res, next) => {
+  submissionUploader.any()(req, res, next);
+};
 
 // Error handling middleware
 export const handleUploadErrors = (err, req, res, next) => {

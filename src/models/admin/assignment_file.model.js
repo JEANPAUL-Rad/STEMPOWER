@@ -6,7 +6,7 @@ export async function addAssignmentFiles(assignment_id, files, uploaded_by = nul
   for (const f of files) {
     const [row] = await sql`
       INSERT INTO assignment_files (assignment_id, file_url, file_name, file_size_bytes, uploaded_by, uploaded_at)
-      VALUES (${assignment_id}, ${f.url}, ${f.name || null}, ${f.size || null}, ${uploaded_by})
+      VALUES (${assignment_id}, ${f.url}, ${f.name || null}, ${f.size || null}, ${uploaded_by}, NOW())
       RETURNING *
     `;
     inserted.push(row);

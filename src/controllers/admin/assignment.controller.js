@@ -355,24 +355,19 @@ export const downloadSubmissionFile = async (req, res) => {
       });
     }
 
-    // Extract public ID from Cloudinary URL
-    const publicId = extractPublicId(submission.answer_file_url);
-    
-    // Generate secure download URL with attachment flag
-    const downloadUrl = generateDownloadUrl(publicId, 'raw', submission.answer_file_name);
-
+    // Return the original stored URL so the frontend can open/download it directly.
+    // This avoids potential 401/404 issues from regenerating a separate download URL.
     res.json({
       success: true,
-      url: downloadUrl,
-      fileName: submission.answer_file_name,
-      originalUrl: submission.answer_file_url // Fallback
+      url: submission.answer_file_url,
+      fileName: submission.answer_file_name
     });
 
   } catch (error) {
     console.error('Download error:', error);
     res.status(500).json({ 
       success: false, 
-      message: 'Failed to get download link: ' + error.message 
+      message: 'Failed to get download link' 
     });
   }
 };

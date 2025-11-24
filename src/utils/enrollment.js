@@ -125,15 +125,22 @@ export async function getUserEnrolledModules(user_id) {
  */
 export async function hasAccessToModule(user_id, module) {
   if (!module) return false;
-  
-  const access = await sql`
-    SELECT 1 FROM enrollments 
-    WHERE user_id = ${user_id} 
-      AND module = ${module} 
-      AND status = 'active'
-    LIMIT 1
-  `;
-  return access.length > 0;
+
+  // Reuse unified enrollment detection (includes enrollments + register fallback)
+  const enrolledModules = await getUserEnrolledModules(user_id);
+  if (!enrolledModules || enrolledModules.length === 0) {
+    return false;
+  }
+
+  const target = (module || '').toLowerCase().trim();
+
+  // Student has access if:
+  // - They are enrolled in the specific module, OR
+  // - They are enrolled in "MEP Design" (super-module, can see all)
+  return enrolledModules.some(m => {
+    const normalized = (m || '').toLowerCase().trim();
+    return normalized === target || normalized === 'mep design';
+  });
 }
 
 /**

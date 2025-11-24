@@ -99,11 +99,15 @@ export async function adminSetPaymentStatus(req, res) {
     }
 }
 
-// Public: list all protoforials without payment status (and no password hash)
+// Public: list all protoforials (excluding password hash) with payment status
 export async function getPublicProtoforial(req, res) {
     try {
         const all = await Proto.getAllProtoforial();
-        const sanitized = (all || []).map(({ payment_status, ...rest }) => rest);
+        const sanitized = (all || []).map((row) => ({
+            ...row,
+            // simple helper flag so frontend can filter "With Doc" / "No Doc"
+            has_documents: Boolean(row.support_document)
+        }));
         res.json({ success: true, data: sanitized });
     } catch (error) {
         res.status(400).json({ success: false, message: error.message });
@@ -148,6 +152,43 @@ export async function uploadSupportDocument(req, res) {
         }
         const docs = await Proto.getDocuments(proto_id);
         res.json({ success:true, data: { uploaded: results, documents: docs } });
+    } catch (error) {
+        res.status(400).json({ success:false, message: error.message });
+    }
+}
+
+export async function deleteDocument(req, res) {
+    try {
+        const { document_id } = req.params;
+        await Proto.deleteDocument(document_id);
+        res.json({ success: true });
+    } catch (error) {
+        res.status(400).json({ success:false, message: error.message });
+    }
+}
+
+export async function uploadProfileImage(req, res) {
+    try {
+        const { proto_id } = req.params;
+        if (!req.file) {
+            return res.status(400).json({ success: false, message: 'No image uploaded' });
+        }
+        await Proto.updateProfileImage(proto_id, req.file.buffer);
+        res.json({ success: true, message: 'Profile image updated successfully' });
+    } catch (error) {
+        res.status(400).json({ success:false, message: error.message });
+    }
+}
+
+export async function getProfileImage(req, res) {
+    try {
+        const { proto_id } = req.params;
+        const row = await Proto.getProfileImage(proto_id);
+        if (!row || !row.profile_image) {
+            return res.status(404).json({ success:false, message: 'Profile image not found' });
+        }
+        res.setHeader('Content-Type', 'image/jpeg');
+        return res.end(row.profile_image);
     } catch (error) {
         res.status(400).json({ success:false, message: error.message });
     }
@@ -198,4 +239,33 @@ export async function downloadDocument(req, res) {
     }
 }
 
+export async function changePassword(req, res) {
+    try {
+        const { email, currentPassword, newPassword } = req.body;
+        if (!email || !currentPassword || !newPassword) {
+            return res.status(400).json({ success: false, message: 'Email, current password, and new password are required' });
+        }
+        if (newPassword.length < 6) {
+            return res.status(400).json({ success: false, message: 'New password must be at least 6 characters long' });
+        }
+        await Proto.changeProtoforialPassword(email, currentPassword, newPassword);
+        res.json({ success: true, message: 'Password updated successfully' });
+    } catch (error) {
+        res.status(400).json({ success:false, message: error.message });
+    }
+}
 
+export async function forgotPassword(req, res) {
+    try {
+        const { email } = req.body;
+        if (!email) {
+            return res.status(400).json({ success: false, message: 'Email is required' });
+        }
+        const tempPassword = Math.random().toString(36).slice(-10);
+        await Proto.resetProtoforialPassword(email, tempPassword);
+        // In a production system, this should be emailed instead of returned.
+        res.json({ success: true, message: 'Temporary password generated successfully', tempPassword });
+    } catch (error) {
+        res.status(400).json({ success:false, message: error.message });
+    }
+}

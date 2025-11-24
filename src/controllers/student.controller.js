@@ -1,9 +1,23 @@
-import * as Student from '../models/student.model.js';
 import * as AssignmentModel from '../models/admin/assignment.model.js';
-import { saveFile, saveSubmissionFile } from '../utils/saveFile.js';
+import * as AssignmentFileModel from '../models/admin/assignment_file.model.js';
+import * as Student from '../models/student.model.js';
 import { hasAccessToModule } from '../utils/enrollment.js';
-import path from 'path';
-import fs from 'fs';
+import { streamOrRedirect } from '../utils/fileDelivery.js';
+import { saveFile, saveSubmissionFile } from '../utils/saveFile.js';
+
+const resolveUploadedFileFromRequest = (req) => {
+  if (req.file) return req.file;
+  if (Array.isArray(req.files) && req.files.length > 0) return req.files[0];
+  if (req.files && typeof req.files === 'object') {
+    for (const key of Object.keys(req.files)) {
+      const value = req.files[key];
+      if (Array.isArray(value) && value.length > 0) {
+        return value[0];
+      }
+    }
+  }
+  return null;
+};
 
 // 1. Weeks & Projects
 export async function getWeeks(req, res) {
@@ -21,30 +35,51 @@ export async function downloadAssignmentFile(req, res) {
   try {
     const assignmentId = parseInt(req.params.assignment_id, 10);
     const userId = req.user.user_id;
+    const fileId = req.query.file_id ? parseInt(req.query.file_id, 10) : null;
     if (isNaN(assignmentId)) {
       return res.status(400).json({ message: 'Invalid assignment ID' });
     }
 
-    // Ensure user has access and get assignment details
     const assignment = await Student.getAssignmentById(assignmentId, userId);
-    if (!assignment || !assignment.question_file_url) {
+    if (!assignment) {
+      return res.status(404).json({ message: 'Assignment not found' });
+    }
+
+    let fileUrl = assignment.question_file_url;
+    let fileName = assignment.question_file_name;
+
+    // Check assignment_files table (new multi-file system)
+    if (!fileUrl || (fileId && assignment.files)) {
+      const files = assignment.files || await AssignmentFileModel.getFilesByAssignment(assignmentId);
+      if (!files || files.length === 0) {
+        // If no files in new system and no question_file_url, return error
+        if (!fileUrl) {
+          return res.status(404).json({ message: 'Assignment file not found' });
+        }
+      } else {
+        const selected = fileId ? files.find((f) => f.file_id === fileId) : files[0];
+        if (selected) {
+          fileUrl = selected.file_url;
+          fileName = selected.file_name;
+        } else if (fileId) {
+          return res.status(404).json({ message: 'Assignment file not found for this ID' });
+        }
+      }
+    }
+
+    if (!fileUrl) {
       return res.status(404).json({ message: 'Assignment file not found' });
     }
 
-    const url = assignment.question_file_url;
-    // If Cloudinary or absolute URL, redirect
-    if (url.startsWith('http://') || url.startsWith('https://') || url.includes('cloudinary.com')) {
-      return res.redirect(url);
-    }
-
-    // Fallback: serve local file if exists
-    const filePath = path.join(process.cwd(), url.replace(/^[\/]+/, ''));
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ message: 'File not found on server', filePath });
-    }
-    return res.download(filePath, assignment.question_file_name || undefined);
+    return streamOrRedirect(
+      res,
+      fileUrl,
+      fileName || `assignment-${assignmentId}`,
+      'Assignment file not found on server.'
+    );
   } catch (error) {
     console.error('Error in downloadAssignmentFile:', error);
+    console.error('Error stack:', error.stack);
     if (!res.headersSent) {
       res.status(500).json({ message: 'Error downloading assignment file', error: error.message });
     }
@@ -148,6 +183,9 @@ export async function markLessonComplete(req, res) {
         res.json({ message: 'Lesson marked as complete' });
     } catch (error) {
         console.error('Error in markLessonComplete controller:', error);
+        if (error.message && (error.message.includes('access') || error.message.includes('enrollment'))) {
+            return res.status(403).json({ message: error.message });
+        }
         res.status(500).json({ message: 'Error marking lesson as complete', error: error.message });
     }
 }
@@ -748,47 +786,129 @@ export const submitAssignment = async (req, res) => {
       // Continue; do not block submission solely due to check error
     }
 
-    if (!req.file) {
+    // Collect all uploaded files (support multiple files)
+    const uploadedFiles = [];
+    console.log('📋 File upload request:', {
+      hasFile: !!req.file,
+      hasFiles: !!req.files,
+      filesType: typeof req.files,
+      filesIsArray: Array.isArray(req.files),
+      filesLength: Array.isArray(req.files) ? req.files.length : Object.keys(req.files || {}).length
+    });
+
+    if (req.file) {
+      console.log('✅ Found single file:', req.file.originalname, req.file.mimetype);
+      uploadedFiles.push(req.file);
+    } else if (Array.isArray(req.files) && req.files.length > 0) {
+      console.log(`✅ Found ${req.files.length} files in array`);
+      uploadedFiles.push(...req.files);
+    } else if (req.files && typeof req.files === 'object') {
+      for (const key of Object.keys(req.files)) {
+        const value = req.files[key];
+        if (Array.isArray(value)) {
+          console.log(`✅ Found ${value.length} files in key "${key}"`);
+          uploadedFiles.push(...value);
+        } else if (value) {
+          console.log(`✅ Found file in key "${key}":`, value.originalname);
+          uploadedFiles.push(value);
+        }
+      }
+    }
+
+    if (uploadedFiles.length === 0) {
+      console.error('❌ No files found in request');
       return res.status(400).json({
         success: false,
-        message: 'Answer file is required'
+        message: 'At least one answer file is required'
       });
     }
 
-    // Upload file to Cloudinary
-    let fileResult;
+    console.log(`📤 Processing ${uploadedFiles.length} file(s) for upload`);
+
+    // Upload all files to Cloudinary
+    const uploadedFileData = [];
     try {
-      fileResult = await saveSubmissionFile(req.file);
+      for (let i = 0; i < uploadedFiles.length; i++) {
+        const file = uploadedFiles[i];
+        console.log(`📤 Uploading file ${i + 1}/${uploadedFiles.length}: ${file.originalname} (${file.mimetype}, ${file.size} bytes)`);
+        try {
+          const fileUrl = await saveSubmissionFile(file);
+          console.log(`✅ File ${i + 1} uploaded successfully: ${fileUrl}`);
+          uploadedFileData.push({
+            url: fileUrl,
+            name: file.originalname,
+            size: file.size
+          });
+        } catch (fileError) {
+          console.error(`❌ Failed to upload file ${i + 1} (${file.originalname}):`, fileError);
+          throw new Error(`Failed to upload ${file.originalname}: ${fileError.message}`);
+        }
+      }
     } catch (uploadError) {
-      console.error('File upload failed:', uploadError);
+      console.error('❌ File upload batch failed:', uploadError);
+      console.error('Error stack:', uploadError.stack);
       return res.status(500).json({
         success: false,
-        message: 'File upload failed: ' + uploadError.message
+        message: 'File upload failed: ' + uploadError.message,
+        error: process.env.NODE_ENV !== 'production' ? uploadError.stack : undefined
       });
     }
 
+    // Create submission record (use first file for backward compatibility)
+    const firstFile = uploadedFileData[0];
     const submissionData = {
       assignment_id,
       user_id: student_id,
-      answer_file_url: fileResult,
-      answer_file_name: req.file.originalname,
-      file_size_bytes: req.file.size,
+      answer_file_url: firstFile.url,
+      answer_file_name: firstFile.name,
+      file_size_bytes: firstFile.size,
       status: 'submitted'
     };
 
-    const submission = await Student.createSubmission(submissionData);
+    console.log('💾 Creating submission record...');
+    let submission;
+    try {
+      submission = await Student.createSubmission(submissionData);
+      console.log('✅ Submission record created:', submission.submission_id);
+    } catch (dbError) {
+      console.error('❌ Failed to create submission record:', dbError);
+      console.error('Error stack:', dbError.stack);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to create submission record: ' + dbError.message,
+        error: process.env.NODE_ENV !== 'production' ? dbError.stack : undefined
+      });
+    }
+
+    // Store all files in assignment_submission_files table
+    if (uploadedFileData.length > 0) {
+      try {
+        console.log(`💾 Storing ${uploadedFileData.length} file(s) in assignment_submission_files...`);
+        const SubmissionFileModel = await import('../models/admin/assignment_submission_file.model.js');
+        const storedFiles = await SubmissionFileModel.addSubmissionFiles(submission.submission_id, uploadedFileData, student_id);
+        console.log(`✅ Stored ${storedFiles.length} file(s) successfully`);
+      } catch (fileErr) {
+        console.error('⚠️ Error storing submission files (non-critical):', fileErr);
+        // Don't fail the submission if file storage fails
+      }
+    }
 
     res.status(201).json({
       success: true,
       message: 'Assignment submitted successfully',
-      data: submission
+      data: {
+        ...submission,
+        files: uploadedFileData
+      }
     });
 
   } catch (error) {
     console.error('Error submitting assignment:', error);
+    console.error('Error stack:', error.stack);
     res.status(500).json({
       success: false,
-      message: 'Failed to submit assignment'
+      message: 'Failed to submit assignment',
+      error: process.env.NODE_ENV !== 'production' ? error.message : undefined
     });
   }
 };
@@ -926,6 +1046,39 @@ export async function getMySubmissions(req, res) {
 // }
 
 
+export async function downloadSubmission(req, res) {
+  try {
+    const submissionId = parseInt(req.params.submission_id, 10);
+    const userId = req.user.user_id;
+
+    if (isNaN(submissionId)) {
+      return res.status(400).json({ success: false, message: 'Invalid submission ID' });
+    }
+
+    const submission = await Student.getSubmissionById(submissionId);
+    if (!submission || !submission.answer_file_url) {
+      return res.status(404).json({ success: false, message: 'Submission not found' });
+    }
+
+    if (submission.user_id !== userId && !['admin', 'teacher'].includes(req.user.role)) {
+      return res.status(403).json({ success: false, message: 'Access denied' });
+    }
+
+    return streamOrRedirect(
+      res,
+      submission.answer_file_url,
+      submission.answer_file_name || `submission-${submissionId}`,
+      'Submission file not found on server'
+    );
+  } catch (error) {
+    console.error('Download submission error:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ success: false, message: 'Internal server error during download', error: error.message });
+    }
+  }
+}
+
+
 export async function downloadLessonFile(req, res) {
   try {
     const lessonId = parseInt(req.params.lesson_id);
@@ -938,19 +1091,12 @@ export async function downloadLessonFile(req, res) {
       return res.status(404).json({ message: 'Lesson file not found' });
     }
 
-    // If file_url is a Cloudinary URL, redirect client to it
-    if (lesson.file_url.includes('cloudinary.com')) {
-      console.log(`📤 Redirecting to Cloudinary: ${lesson.file_url}`);
-      return res.redirect(lesson.file_url);
-    }
-
-    // Fallback for local files (if any still exist)
-    const filePath = path.join(process.cwd(), lesson.file_url.replace(/^[\/\\]+/, ''));
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ message: 'File not found on server', filePath });
-    }
-
-    res.download(filePath, path.basename(filePath));
+    return streamOrRedirect(
+      res,
+      lesson.file_url,
+      lesson.title || `lesson-${lessonId}`,
+      'File not found on server'
+    );
   } catch (error) {
     console.error('Lesson File Download Error:', error);
     res.status(500).json({ message: 'Internal server error during download', error: error.message });

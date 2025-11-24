@@ -122,13 +122,110 @@ export async function updateLesson(lesson_id, {
   return lesson;
 }
 
-// Delete lesson (and its sublessons)
+// Delete lesson (and its sublessons) along with related files, progress and assignments
 export async function deleteLesson(lesson_id) {
-  await sql`
-    DELETE FROM lessons WHERE parent_lesson_id = ${lesson_id}
-  `;
-  await sql`
-    DELETE FROM lessons WHERE lesson_id = ${lesson_id}
-  `;
-  return true;
+  return await sql.begin(async (trx) => {
+    // Collect all lesson_ids to delete: the lesson itself and ALL nested sublessons
+    const lessonsToDelete = await trx`
+      WITH RECURSIVE lesson_tree AS (
+        SELECT lesson_id
+        FROM lessons
+        WHERE lesson_id = ${lesson_id}
+        UNION ALL
+        SELECT l.lesson_id
+        FROM lessons l
+        INNER JOIN lesson_tree lt ON l.parent_lesson_id = lt.lesson_id
+      )
+      SELECT lesson_id FROM lesson_tree
+    `;
+
+    const ids = lessonsToDelete.map(l => l.lesson_id);
+
+    if (ids.length > 0) {
+      // Find all assignments linked to these lessons
+      const assignments = await trx`
+        SELECT assignment_id
+        FROM assignments
+        WHERE lesson_id = ANY(${trx.array(ids)})
+      `;
+
+      const assignmentIds = assignments.map(a => a.assignment_id);
+
+      if (assignmentIds.length > 0) {
+        // Delete assignment-related data in proper dependency order
+
+        // 1) Assignment comments
+        await trx`
+          DELETE FROM assignment_comments
+          WHERE assignment_id = ANY(${trx.array(assignmentIds)})
+        `;
+
+        // 2) Assignment downloads
+        await trx`
+          DELETE FROM assignment_downloads
+          WHERE assignment_id = ANY(${trx.array(assignmentIds)})
+        `;
+
+        // 3) Assignment files
+        await trx`
+          DELETE FROM assignment_files
+          WHERE assignment_id = ANY(${trx.array(assignmentIds)})
+        `;
+
+        // 4) Assignment submissions and their files
+        const submissions = await trx`
+          SELECT submission_id
+          FROM assignment_submissions
+          WHERE assignment_id = ANY(${trx.array(assignmentIds)})
+        `;
+
+        const submissionIds = submissions.map(s => s.submission_id);
+
+        if (submissionIds.length > 0) {
+          await trx`
+            DELETE FROM assignment_submission_files
+            WHERE submission_id = ANY(${trx.array(submissionIds)})
+          `;
+        }
+
+        await trx`
+          DELETE FROM assignment_submissions
+          WHERE assignment_id = ANY(${trx.array(assignmentIds)})
+        `;
+
+        // Finally delete assignments themselves
+        await trx`
+          DELETE FROM assignments
+          WHERE assignment_id = ANY(${trx.array(assignmentIds)})
+        `;
+      }
+
+      // Remove lesson_files linked to these lessons
+      await trx`
+        DELETE FROM lesson_files
+        WHERE lesson_id = ANY(${trx.array(ids)})
+      `;
+
+      // Remove progress entries linked to these lessons
+      await trx`
+        DELETE FROM progress
+        WHERE lesson_id = ANY(${trx.array(ids)})
+      `;
+
+      // Detach quizzes that are linked to these lessons (set lesson_id to NULL)
+      await trx`
+        UPDATE quizzes
+        SET lesson_id = NULL
+        WHERE lesson_id = ANY(${trx.array(ids)})
+      `;
+
+      // Delete all lessons collected in the tree (children and main lesson)
+      await trx`
+        DELETE FROM lessons
+        WHERE lesson_id = ANY(${trx.array(ids)})
+      `;
+    }
+
+    return true;
+  });
 }

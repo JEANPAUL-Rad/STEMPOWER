@@ -18,12 +18,23 @@ export const saveFile = async (file) => {
     throw new Error('Cloudinary environment variables not configured');
   }
 
-  // Enhanced resource type detection
+  // Enhanced resource type detection - treat documents as 'raw' for proper download
   const resourceType = mimetype.startsWith('video') ? 'video' :
                       mimetype.startsWith('image') ? 'image' :
                       mimetype === 'application/pdf' ||
+                      mimetype.includes('word') ||
+                      mimetype.includes('excel') ||
+                      mimetype.includes('spreadsheet') ||
+                      mimetype.includes('powerpoint') ||
+                      mimetype.includes('presentation') ||
                       mimetype.includes('msword') ||
-                      mimetype.includes('wordprocessingml') ? 'raw' : 'image';
+                      mimetype.includes('ms-excel') ||
+                      mimetype.includes('ms-powerpoint') ||
+                      mimetype === 'text/plain' ||
+                      mimetype === 'text/csv' ||
+                      mimetype === 'application/zip' ||
+                      mimetype === 'application/x-rar-compressed' ||
+                      mimetype === 'application/octet-stream' ? 'raw' : 'image';
 
   console.log(`📤 Uploading to Cloudinary: ${originalname} (${mimetype}, ${resourceType})`);
 
@@ -76,11 +87,23 @@ const uploadToFolder = async (file, folder) => {
 
   const { buffer, mimetype, originalname } = file;
 
-  // Enhanced resource type detection
+  // Enhanced resource type detection - treat documents as 'raw' for proper download
   const resourceType = mimetype.startsWith('video') ? 'video' :
                       mimetype.startsWith('image') ? 'image' :
                       mimetype === 'application/pdf' ||
-                      mimetype.includes('word') ? 'raw' : 'image';
+                      mimetype.includes('word') ||
+                      mimetype.includes('excel') ||
+                      mimetype.includes('spreadsheet') ||
+                      mimetype.includes('powerpoint') ||
+                      mimetype.includes('presentation') ||
+                      mimetype.includes('msword') ||
+                      mimetype.includes('ms-excel') ||
+                      mimetype.includes('ms-powerpoint') ||
+                      mimetype === 'text/plain' ||
+                      mimetype === 'text/csv' ||
+                      mimetype === 'application/zip' ||
+                      mimetype === 'application/x-rar-compressed' ||
+                      mimetype === 'application/octet-stream' ? 'raw' : 'image';
 
   return new Promise((resolve, reject) => {
     const uploadStream = cloudinary.uploader.upload_stream(

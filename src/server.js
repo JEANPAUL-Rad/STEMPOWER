@@ -23,9 +23,13 @@ const server = createServer(app);
 // Initialize WebSocket with the server
 initializeWebSocket(server);
 
-// Start quiz timer service
-console.log('Starting Quiz Timer Service...');
-quizTimerService.start();
+// Start quiz timer service (disabled by default; enable with QUIZ_TIMER_ENABLED=true)
+if (process.env.QUIZ_TIMER_ENABLED === 'true') {
+  console.log('Starting Quiz Timer Service...');
+  quizTimerService.start();
+} else {
+  console.log('Quiz Timer Service is disabled (set QUIZ_TIMER_ENABLED=true to enable).');
+}
 
 // Start auto-block scheduler
 startAutoBlockJob();

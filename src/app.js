@@ -45,6 +45,50 @@ app.use('/uploads/quiz-submissions', express.static(path.join(__dirname, 'upload
 app.use('/uploads/assignments', express.static(path.join(__dirname, 'uploads/assignments')));
 app.use('/uploads/assignment-submissions', express.static(path.join(__dirname, 'uploads/assignment-submissions')));
 
+const isRemoteUrl = (url = '') => /^https?:\/\//i.test(url);
+
+const resolveLocalDownloadPath = (fileUrl = '') => {
+  if (!fileUrl) return null;
+
+  if (path.isAbsolute(fileUrl) && fs.existsSync(fileUrl)) {
+    return fileUrl;
+  }
+
+  const cleaned = fileUrl.replace(/^[./\\]+/, '');
+  const directPath = path.join(process.cwd(), cleaned);
+  if (fs.existsSync(directPath)) {
+    return directPath;
+  }
+
+  const uploadsPath = path.join(process.cwd(), 'uploads', cleaned);
+  if (fs.existsSync(uploadsPath)) {
+    return uploadsPath;
+  }
+
+  return null;
+};
+
+const streamOrRedirect = (res, fileUrl, downloadName, notFoundMessage = 'File not found on server.') => {
+  if (isRemoteUrl(fileUrl)) {
+    return res.redirect(fileUrl);
+  }
+
+  const filePath = resolveLocalDownloadPath(fileUrl);
+  if (!filePath) {
+    return res.status(404).json({ message: notFoundMessage });
+  }
+
+  res.download(filePath, downloadName || path.basename(filePath), (err) => {
+    if (err && !res.headersSent) {
+      if (err.code === 'ENOENT') {
+        res.status(404).json({ message: notFoundMessage });
+      } else {
+        res.status(500).json({ message: 'Error downloading file.' });
+      }
+    }
+  });
+};
+
 // Import routes
 import * as QuizQuestionModel from './models/admin/quiz_question.model.js';
 import adminRoutes from './routes/admin.routes.js';
@@ -64,6 +108,9 @@ import registerRoutes from './routes/register.routes.js';
 import studentRoutes from './routes/student.routes.js';
 import userRoutes from './routes/user.routes.js';
 import protoforialRoutes from './routes/protoforial.routes.js';
+import * as AssignmentModel from './models/admin/assignment.model.js';
+import * as AssignmentFileModel from './models/admin/assignment_file.model.js';
+import * as StudentModel from './models/student.model.js';
 
 // Download routes
 app.get('/api/download/question-file/:quizId/:questionId', async (req, res) => {
@@ -99,29 +146,34 @@ app.get('/api/download/question-file/:quizId/:questionId', async (req, res) => {
 app.get('/api/download/assignment/:assignment_id', async (req, res) => {
   try {
     const { assignment_id } = req.params;
-    
-    const AssignmentModel = await import('./models/admin/assignment.model.js');
     const assignment = await AssignmentModel.getAssignmentById(assignment_id);
 
-    if (!assignment || !assignment.question_file_url) {
+    if (!assignment) {
+      return res.status(404).json({ message: 'Assignment not found.' });
+    }
+
+    let fileUrl = assignment.question_file_url;
+    let fileName = assignment.question_file_name;
+
+    // Fallback to new multi-file system if legacy question_file_url is missing
+    if (!fileUrl) {
+      const files = await AssignmentFileModel.getFilesByAssignment(assignment_id);
+      if (files && files.length > 0) {
+        fileUrl = files[0].file_url;
+        fileName = files[0].file_name || fileName;
+      }
+    }
+
+    if (!fileUrl) {
       return res.status(404).json({ message: 'Assignment file not found.' });
     }
 
-    const filePath = path.join(__dirname, 'uploads', assignment.question_file_url);
-    if (fs.existsSync(filePath)) {
-      const fileName = assignment.question_file_name || path.basename(assignment.question_file_url);
-      res.download(filePath, fileName, (err) => {
-        if (err) {
-          console.error('Error sending assignment file:', err);
-          if (err.code === 'ENOENT') {
-            return res.status(404).json({ message: 'Assignment file not found on server.' });
-          }
-          res.status(500).json({ message: 'Error downloading assignment file.' });
-        }
-      });
-    } else {
-      res.status(404).json({ message: 'Assignment file not found on server.' });
-    }
+    return streamOrRedirect(
+      res,
+      fileUrl,
+      fileName || path.basename(fileUrl),
+      'Assignment file not found on server.'
+    );
   } catch (error) {
     console.error('Assignment download error:', error);
     res.status(500).json({ message: 'Internal server error during download.' });
@@ -131,29 +183,18 @@ app.get('/api/download/assignment/:assignment_id', async (req, res) => {
 app.get('/api/download/submission/:submission_id', async (req, res) => {
   try {
     const { submission_id } = req.params;
-    
-    const SubmissionModel = await import('./models/student/assignment_submission.model.js');
-    const submission = await SubmissionModel.getSubmissionById(submission_id);
+    const submission = await StudentModel.getSubmissionById(submission_id);
 
     if (!submission || !submission.answer_file_url) {
       return res.status(404).json({ message: 'Submission file not found.' });
     }
 
-    const filePath = path.join(__dirname, 'uploads', submission.answer_file_url);
-    if (fs.existsSync(filePath)) {
-      const fileName = submission.answer_file_name || path.basename(submission.answer_file_url);
-      res.download(filePath, fileName, (err) => {
-        if (err) {
-          console.error('Error sending submission file:', err);
-          if (err.code === 'ENOENT') {
-            return res.status(404).json({ message: 'Submission file not found on server.' });
-          }
-          res.status(500).json({ message: 'Error downloading submission file.' });
-        }
-      });
-    } else {
-      res.status(404).json({ message: 'Submission file not found on server.' });
-    }
+    return streamOrRedirect(
+      res,
+      submission.answer_file_url,
+      submission.answer_file_name || path.basename(submission.answer_file_url),
+      'Submission file not found on server.'
+    );
   } catch (error) {
     console.error('Submission download error:', error);
     res.status(500).json({ message: 'Internal server error during download.' });

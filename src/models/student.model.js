@@ -451,11 +451,56 @@ export async function getLessonDetails(lesson_id) {
 
 // 3. Mark Lesson Complete
 export async function markLessonComplete(user_id, lesson_id) {
+    const [lesson] = await sql`
+        SELECT 
+            l.lesson_id,
+            COALESCE(l.module, p.module, w.module) AS effective_module
+        FROM lessons l
+        LEFT JOIN projects p ON l.project_id = p.project_id
+        LEFT JOIN weeks w ON p.week_id = w.week_id
+        WHERE l.lesson_id = ${lesson_id}
+        LIMIT 1
+    `;
+
+    if (!lesson) {
+        throw new Error('Lesson not found');
+    }
+
+    const modules = await getUserEnrolledModules(user_id);
+    if (!modules || modules.length === 0 || !modules[0]) {
+        throw new Error('No active course enrollment found');
+    }
+
+    const userModule = modules[0];
+    const normalizedModule = normalizeModule(userModule);
+    const isMEP = normalizedModule === 'MEP Design';
+
+    if (lesson.effective_module && !isMEP) {
+        const lessonModuleNormalized = normalizeModule(lesson.effective_module);
+        const lessonModuleLower = (lessonModuleNormalized || '').toLowerCase().trim();
+        const userModuleLower = (normalizedModule || '').toLowerCase().trim();
+        if (
+            lessonModuleLower &&
+            lessonModuleLower !== userModuleLower &&
+            lesson.effective_module !== userModule &&
+            lessonModuleNormalized !== normalizedModule
+        ) {
+            throw new Error('You do not have access to this lesson');
+        }
+    }
+
     await sql`
         INSERT INTO progress (user_id, lesson_id, completed, completed_at)
-        VALUES (${user_id}, ${lesson_id}, true, NOW())
-        ON CONFLICT (user_id, lesson_id) DO UPDATE
+        SELECT ${user_id}, ${lesson_id}, true, NOW()
+        WHERE NOT EXISTS (
+            SELECT 1 FROM progress WHERE user_id = ${user_id} AND lesson_id = ${lesson_id}
+        )
+    `;
+
+    await sql`
+        UPDATE progress
         SET completed = true, completed_at = NOW()
+        WHERE user_id = ${user_id} AND lesson_id = ${lesson_id}
     `;
 }
 
@@ -595,14 +640,7 @@ export async function getQuizHistory(user_id) {
                 SELECT
                     sa.*,
                     qq.question_text,
-                    qq.type as question_type,
-                    sa.file_url,
-                    -- Extract filename from file_url for display
-                    CASE 
-                        WHEN sa.file_url IS NOT NULL 
-                        THEN substring(sa.file_url from '[^/]*$')
-                        ELSE NULL 
-                    END as file_name
+                    qq.type as question_type
                 FROM submission_answers sa
                 JOIN quiz_questions qq ON sa.question_id = qq.question_id
                 WHERE sa.submission_id = ${sub.submission_id}
@@ -817,19 +855,94 @@ export async function getProgress(user_id) {
     }
 }
 
+// Helper: get the user's primary module, mirroring getMyDashboard logic
+export async function getUserPrimaryModule(user_id) {
+    // STEP 1: Get user's email from users table
+    const userInfo = await sql`
+        SELECT email FROM users WHERE user_id = ${user_id} LIMIT 1
+    `;
+    const userEmail = userInfo.length > 0 ? userInfo[0].email : null;
+
+    // STEP 2: Try active enrollments (with register join)
+    let enrolledModulesDetails = [];
+    try {
+        enrolledModulesDetails = await sql`
+            SELECT 
+                COALESCE(r.module, e.module) as module,
+                e.enrolled_at,
+                e.status,
+                r.id as registration_id,
+                r.module as registration_module,
+                e.module as enrollment_module,
+                r.payment_status
+            FROM enrollments e
+            LEFT JOIN register r ON e.registration_id = r.id
+            WHERE e.user_id = ${user_id} AND e.status = 'active'
+            ORDER BY e.enrolled_at DESC
+            LIMIT 1
+        `;
+    } catch (err) {
+        console.error('Error fetching enrollments in getUserPrimaryModule:', err);
+    }
+
+    // STEP 3: If no active enrollment, fall back to register table
+    if (enrolledModulesDetails.length === 0 && userEmail) {
+        try {
+            enrolledModulesDetails = await sql`
+                SELECT 
+                    r.module,
+                    r.created_at as enrolled_at,
+                    'pending' as status,
+                    r.id as registration_id,
+                    r.module as registration_module,
+                    r.module as enrollment_module,
+                    r.payment_status
+                FROM register r
+                WHERE r.user_id = ${user_id} AND r.module IS NOT NULL
+                ORDER BY r.created_at DESC
+                LIMIT 1
+            `;
+
+            if (enrolledModulesDetails.length === 0) {
+                enrolledModulesDetails = await sql`
+                    SELECT 
+                        r.module,
+                        r.created_at as enrolled_at,
+                        'pending' as status,
+                        r.id as registration_id,
+                        r.module as registration_module,
+                        r.module as enrollment_module,
+                        r.payment_status
+                    FROM register r
+                    WHERE r.email_address = ${userEmail} AND r.module IS NOT NULL
+                    ORDER BY r.created_at DESC
+                    LIMIT 1
+                `;
+            }
+        } catch (err) {
+            console.error('Error fetching register data in getUserPrimaryModule:', err);
+        }
+    }
+
+    if (enrolledModulesDetails.length === 0) {
+        return null;
+    }
+
+    const primary = enrolledModulesDetails[0];
+    return primary.registration_module || primary.module || primary.enrollment_module || null;
+}
+
 // 6. Resources
 export async function getResources(type, user_id) {
     try {
-        // Get user's enrolled modules
-        const modules = await getUserEnrolledModules(user_id);
+        // Use the same primary module detection as the dashboard
+        const userModule = await getUserPrimaryModule(user_id);
         
-        // If no enrollments, return empty (no access)
-        if (!modules || modules.length === 0 || !modules[0]) {
-            console.log(`⚠️ No enrolled modules for user ${user_id} in getResources - returning empty set`);
+        // If no module, return empty (no access)
+        if (!userModule || typeof userModule !== 'string') {
+            console.log(`⚠️ No primary module for user ${user_id} in getResources - returning empty set`);
             return [];
         }
-        
-        const userModule = modules[0];
         const normalizedModule = normalizeModule(userModule);
         console.log(`📚 Fetching resources for user ${user_id} with module: "${userModule}"`);
         
@@ -842,8 +955,10 @@ export async function getResources(type, user_id) {
             ? sql`WHERE 1=1`
             : sql`
                 WHERE (
+                    -- Public resources are always visible
                     r.is_public = true
                     OR (
+                        -- Resources explicitly tagged with a module
                         r.module IS NOT NULL 
                         AND r.module != ''
                         AND (
@@ -851,6 +966,18 @@ export async function getResources(type, user_id) {
                             OR LOWER(TRIM(r.module)) = ${normalizedModuleLower}
                             OR r.module = ${userModule}
                             OR r.module = ${normalizedModule}
+                        )
+                    )
+                    OR (
+                        -- Resources linked to a week whose module matches the user
+                        r.week_id IS NOT NULL
+                        AND w.module IS NOT NULL
+                        AND w.module != ''
+                        AND (
+                            LOWER(TRIM(w.module)) = ${userModuleLower}
+                            OR LOWER(TRIM(w.module)) = ${normalizedModuleLower}
+                            OR w.module = ${userModule}
+                            OR w.module = ${normalizedModule}
                         )
                     )
                 )
@@ -862,6 +989,11 @@ export async function getResources(type, user_id) {
                 r.*,
                 w.title AS week_title,
                 w.order_num AS week_order,
+                CASE 
+                    WHEN r.is_public = true THEN 'public'
+                    WHEN r.module IS NOT NULL AND r.module != '' THEN 'module_specific'
+                    ELSE 'general'
+                END AS resource_category,
                 COALESCE(file_data.files, '[]'::json) AS files_json,
                 file_data.file_url AS primary_file_url,
                 file_data.image_url AS primary_image_url,
@@ -1391,9 +1523,11 @@ export async function getMyDashboard(user_id) {
         }
 
         const normalizedModule = normalizeModule(userModule);
+        const isMEP = normalizedModule === 'MEP Design';
         console.log(`📊 Fetching dashboard stats for user ${user_id}`);
         console.log(`   User module: "${userModule}"`);
         console.log(`   Normalized: "${normalizedModule}"`);
+        console.log(`   isMEP: ${isMEP}`);
         
         // Simple module matching (case-insensitive)
         const userModuleLower = (userModule || '').toLowerCase().trim();
@@ -1409,79 +1543,30 @@ export async function getMyDashboard(user_id) {
         `;
         console.log(`🔍 Available modules in weeks table:`, availableModules.map(m => `${m.module} (${m.count} weeks)`));
         
-        // Fetch stats ONLY for enrolled modules
-        // Check both direct module fields and relationship-based modules
-        const overallStats = await sql`
-            SELECT
-                COUNT(DISTINCT p.project_id) as total_projects,
-                COUNT(DISTINCT l.lesson_id) as total_lessons,
-                COUNT(DISTINCT w.week_id) as total_weeks
-            FROM weeks w
-            LEFT JOIN projects p ON w.week_id = p.week_id
-            LEFT JOIN lessons l ON p.project_id = l.project_id
-            WHERE (
-                -- Weeks with matching module
-                (w.module IS NOT NULL 
-                  AND w.module != ''
-                  AND (
-                      LOWER(TRIM(w.module)) = ${userModuleLower}
-                      OR LOWER(TRIM(w.module)) = ${normalizedModuleLower}
-                      OR w.module = ${userModule}
-                      OR w.module = ${normalizedModule}
-                  ))
-                -- OR projects with direct module match
-                OR (p.module IS NOT NULL 
-                  AND p.module != ''
-                  AND (
-                      LOWER(TRIM(p.module)) = ${userModuleLower}
-                      OR LOWER(TRIM(p.module)) = ${normalizedModuleLower}
-                      OR p.module = ${userModule}
-                      OR p.module = ${normalizedModule}
-                  ))
-                -- OR lessons with direct module match
-                OR (l.module IS NOT NULL 
-                  AND l.module != ''
-                  AND (
-                      LOWER(TRIM(l.module)) = ${userModuleLower}
-                      OR LOWER(TRIM(l.module)) = ${normalizedModuleLower}
-                      OR l.module = ${userModule}
-                      OR l.module = ${normalizedModule}
-                  ))
-            )
-        `;
-
-        // Fetch user-specific completed lessons (only for enrolled modules)
-        // Check lesson.module, project.module, and week.module
-        const userCompletedLessons = await sql`
-            SELECT
-                COUNT(DISTINCT pr.lesson_id) as completed_lessons
-            FROM progress pr
-            JOIN lessons l ON pr.lesson_id = l.lesson_id
-            LEFT JOIN projects p ON l.project_id = p.project_id
-            LEFT JOIN weeks w ON p.week_id = w.week_id
-            WHERE pr.user_id = ${user_id} 
-                AND pr.completed = true
-                AND (
-                    -- Lesson has direct module match
-                    (l.module IS NOT NULL 
-                      AND l.module != ''
-                      AND (
-                          LOWER(TRIM(l.module)) = ${userModuleLower}
-                          OR LOWER(TRIM(l.module)) = ${normalizedModuleLower}
-                          OR l.module = ${userModule}
-                          OR l.module = ${normalizedModule}
-                      ))
-                    -- OR lesson's project has module match
-                    OR (p.module IS NOT NULL 
-                      AND p.module != ''
-                      AND (
-                          LOWER(TRIM(p.module)) = ${userModuleLower}
-                          OR LOWER(TRIM(p.module)) = ${normalizedModuleLower}
-                          OR p.module = ${userModule}
-                          OR p.module = ${normalizedModule}
-                      ))
-                    -- OR lesson's week has module match
-                    OR (w.module IS NOT NULL 
+        // Fetch stats
+        // For normal modules, restrict to that module.
+        // For MEP, aggregate across all modules (super-access).
+        const overallStats = isMEP
+            ? await sql`
+                SELECT
+                    COUNT(DISTINCT p.project_id) as total_projects,
+                    COUNT(DISTINCT l.lesson_id) as total_lessons,
+                    COUNT(DISTINCT w.week_id) as total_weeks
+                FROM weeks w
+                LEFT JOIN projects p ON w.week_id = p.week_id
+                LEFT JOIN lessons l ON p.project_id = l.project_id
+            `
+            : await sql`
+                SELECT
+                    COUNT(DISTINCT p.project_id) as total_projects,
+                    COUNT(DISTINCT l.lesson_id) as total_lessons,
+                    COUNT(DISTINCT w.week_id) as total_weeks
+                FROM weeks w
+                LEFT JOIN projects p ON w.week_id = p.week_id
+                LEFT JOIN lessons l ON p.project_id = l.project_id
+                WHERE (
+                    -- Weeks with matching module
+                    (w.module IS NOT NULL 
                       AND w.module != ''
                       AND (
                           LOWER(TRIM(w.module)) = ${userModuleLower}
@@ -1489,32 +1574,7 @@ export async function getMyDashboard(user_id) {
                           OR w.module = ${userModule}
                           OR w.module = ${normalizedModule}
                       ))
-                )
-        `;
-
-        // Fetch user-specific quizzes taken (only for enrolled modules)
-        // Check quiz.module directly plus relationships
-        const userQuizzesTaken = await sql`
-            SELECT
-                COUNT(DISTINCT qs.submission_id) as quizzes_taken
-            FROM quiz_submissions qs
-            JOIN quizzes q ON qs.quiz_id = q.quiz_id
-            LEFT JOIN projects p ON q.project_id = p.project_id
-            LEFT JOIN lessons l ON q.lesson_id = l.lesson_id
-            LEFT JOIN projects p2 ON l.project_id = p2.project_id
-            LEFT JOIN weeks w ON COALESCE(p.week_id, p2.week_id) = w.week_id
-            WHERE qs.user_id = ${user_id}
-                AND (
-                    -- Quiz has direct module match
-                    (q.module IS NOT NULL 
-                      AND q.module != ''
-                      AND (
-                          LOWER(TRIM(q.module)) = ${userModuleLower}
-                          OR LOWER(TRIM(q.module)) = ${normalizedModuleLower}
-                          OR q.module = ${userModule}
-                          OR q.module = ${normalizedModule}
-                      ))
-                    -- OR quiz's project has module match
+                    -- OR projects with direct module match
                     OR (p.module IS NOT NULL 
                       AND p.module != ''
                       AND (
@@ -1523,7 +1583,7 @@ export async function getMyDashboard(user_id) {
                           OR p.module = ${userModule}
                           OR p.module = ${normalizedModule}
                       ))
-                    -- OR quiz's lesson has module match
+                    -- OR lessons with direct module match
                     OR (l.module IS NOT NULL 
                       AND l.module != ''
                       AND (
@@ -1532,26 +1592,126 @@ export async function getMyDashboard(user_id) {
                           OR l.module = ${userModule}
                           OR l.module = ${normalizedModule}
                       ))
-                    -- OR quiz's lesson's project has module match
-                    OR (p2.module IS NOT NULL 
-                      AND p2.module != ''
-                      AND (
-                          LOWER(TRIM(p2.module)) = ${userModuleLower}
-                          OR LOWER(TRIM(p2.module)) = ${normalizedModuleLower}
-                          OR p2.module = ${userModule}
-                          OR p2.module = ${normalizedModule}
-                      ))
-                    -- OR quiz's week has module match
-                    OR (w.module IS NOT NULL 
-                      AND w.module != ''
-                      AND (
-                          LOWER(TRIM(w.module)) = ${userModuleLower}
-                          OR LOWER(TRIM(w.module)) = ${normalizedModuleLower}
-                          OR w.module = ${userModule}
-                          OR w.module = ${normalizedModule}
-                      ))
                 )
-        `;
+            `;
+
+        // Fetch user-specific completed lessons
+        // For MEP, count all completed lessons; for others, filter by module
+        const userCompletedLessons = isMEP
+            ? await sql`
+                SELECT
+                    COUNT(DISTINCT pr.lesson_id) as completed_lessons
+                FROM progress pr
+                WHERE pr.user_id = ${user_id} 
+                  AND pr.completed = true
+            `
+            : await sql`
+                SELECT
+                    COUNT(DISTINCT pr.lesson_id) as completed_lessons
+                FROM progress pr
+                JOIN lessons l ON pr.lesson_id = l.lesson_id
+                LEFT JOIN projects p ON l.project_id = p.project_id
+                LEFT JOIN weeks w ON p.week_id = w.week_id
+                WHERE pr.user_id = ${user_id} 
+                    AND pr.completed = true
+                    AND (
+                        -- Lesson has direct module match
+                        (l.module IS NOT NULL 
+                          AND l.module != ''
+                          AND (
+                              LOWER(TRIM(l.module)) = ${userModuleLower}
+                              OR LOWER(TRIM(l.module)) = ${normalizedModuleLower}
+                              OR l.module = ${userModule}
+                              OR l.module = ${normalizedModule}
+                          ))
+                        -- OR lesson's project has module match
+                        OR (p.module IS NOT NULL 
+                          AND p.module != ''
+                          AND (
+                              LOWER(TRIM(p.module)) = ${userModuleLower}
+                              OR LOWER(TRIM(p.module)) = ${normalizedModuleLower}
+                              OR p.module = ${userModule}
+                              OR p.module = ${normalizedModule}
+                          ))
+                        -- OR lesson's week has module match
+                        OR (w.module IS NOT NULL 
+                          AND w.module != ''
+                          AND (
+                              LOWER(TRIM(w.module)) = ${userModuleLower}
+                              OR LOWER(TRIM(w.module)) = ${normalizedModuleLower}
+                              OR w.module = ${userModule}
+                              OR w.module = ${normalizedModule}
+                          ))
+                    )
+            `;
+
+        // Fetch user-specific quizzes taken
+        // For MEP, include all quizzes; for others, filter by module
+        const userQuizzesTaken = isMEP
+            ? await sql`
+                SELECT
+                    COUNT(DISTINCT qs.submission_id) as quizzes_taken
+                FROM quiz_submissions qs
+                WHERE qs.user_id = ${user_id}
+            `
+            : await sql`
+                SELECT
+                    COUNT(DISTINCT qs.submission_id) as quizzes_taken
+                FROM quiz_submissions qs
+                JOIN quizzes q ON qs.quiz_id = q.quiz_id
+                LEFT JOIN projects p ON q.project_id = p.project_id
+                LEFT JOIN lessons l ON q.lesson_id = l.lesson_id
+                LEFT JOIN projects p2 ON l.project_id = p2.project_id
+                LEFT JOIN weeks w ON COALESCE(p.week_id, p2.week_id) = w.week_id
+                WHERE qs.user_id = ${user_id}
+                    AND (
+                        -- Quiz has direct module match
+                        (q.module IS NOT NULL 
+                          AND q.module != ''
+                          AND (
+                              LOWER(TRIM(q.module)) = ${userModuleLower}
+                              OR LOWER(TRIM(q.module)) = ${normalizedModuleLower}
+                              OR q.module = ${userModule}
+                              OR q.module = ${normalizedModule}
+                          ))
+                        -- OR quiz's project has module match
+                        OR (p.module IS NOT NULL 
+                          AND p.module != ''
+                          AND (
+                              LOWER(TRIM(p.module)) = ${userModuleLower}
+                              OR LOWER(TRIM(p.module)) = ${normalizedModuleLower}
+                              OR p.module = ${userModule}
+                              OR p.module = ${normalizedModule}
+                          ))
+                        -- OR quiz's lesson has module match
+                        OR (l.module IS NOT NULL 
+                          AND l.module != ''
+                          AND (
+                              LOWER(TRIM(l.module)) = ${userModuleLower}
+                              OR LOWER(TRIM(l.module)) = ${normalizedModuleLower}
+                              OR l.module = ${userModule}
+                              OR l.module = ${normalizedModule}
+                          ))
+                        -- OR quiz's lesson's project has module match
+                        OR (p2.module IS NOT NULL 
+                          AND p2.module != ''
+                          AND (
+                              LOWER(TRIM(p2.module)) = ${userModuleLower}
+                              OR LOWER(TRIM(p2.module)) = ${normalizedModuleLower}
+                              OR p2.module = ${userModule}
+                              OR p2.module = ${normalizedModule}
+                          ))
+                        -- OR quiz's week has module match
+                        OR (w.module IS NOT NULL 
+                          AND w.module != ''
+                          AND (
+                              LOWER(TRIM(w.module)) = ${userModuleLower}
+                              OR LOWER(TRIM(w.module)) = ${normalizedModuleLower}
+                              OR w.module = ${userModule}
+                              OR w.module = ${normalizedModule}
+                          ))
+                    )
+            `;
 
         // Combine results
         const statsResult = {
@@ -1564,58 +1724,81 @@ export async function getMyDashboard(user_id) {
         
         console.log(`📊 Dashboard stats result:`, statsResult);
 
-        // Get current progress (only for enrolled modules)
-        // Check lesson.module, project.module, and week.module
-        const currentProgress = await sql`
-            SELECT
-                w.week_id,
-                w.title as current_week,
-                p.project_id,
-                p.title as current_project,
-                l.lesson_id as next_lesson_id,
-                l.title as next_lesson_title,
-                COUNT(l_all.lesson_id) as total_lessons_in_project,
-                COUNT(CASE WHEN pr_all.completed = true THEN 1 END) as completed_lessons_in_project
-            FROM lessons l
-            LEFT JOIN projects p ON l.project_id = p.project_id
-            LEFT JOIN weeks w ON p.week_id = w.week_id
-            LEFT JOIN progress pr ON l.lesson_id = pr.lesson_id AND pr.user_id = ${user_id}
-            LEFT JOIN lessons l_all ON p.project_id = l_all.project_id
-            LEFT JOIN progress pr_all ON l_all.lesson_id = pr_all.lesson_id AND pr_all.user_id = ${user_id}
-            WHERE (pr.completed IS NULL OR pr.completed = false)
-                AND (
-                    -- Lesson has direct module match
-                    (l.module IS NOT NULL 
-                      AND l.module != ''
-                      AND (
-                          LOWER(TRIM(l.module)) = ${userModuleLower}
-                          OR LOWER(TRIM(l.module)) = ${normalizedModuleLower}
-                          OR l.module = ${userModule}
-                          OR l.module = ${normalizedModule}
-                      ))
-                    -- OR lesson's project has module match
-                    OR (p.module IS NOT NULL 
-                      AND p.module != ''
-                      AND (
-                          LOWER(TRIM(p.module)) = ${userModuleLower}
-                          OR LOWER(TRIM(p.module)) = ${normalizedModuleLower}
-                          OR p.module = ${userModule}
-                          OR p.module = ${normalizedModule}
-                      ))
-                    -- OR lesson's week has module match
-                    OR (w.module IS NOT NULL 
-                      AND w.module != ''
-                      AND (
-                          LOWER(TRIM(w.module)) = ${userModuleLower}
-                          OR LOWER(TRIM(w.module)) = ${normalizedModuleLower}
-                          OR w.module = ${userModule}
-                          OR w.module = ${normalizedModule}
-                      ))
-                )
-            GROUP BY w.week_id, w.title, p.project_id, p.title, l.lesson_id, l.title, l.order_num
-            ORDER BY w.order_num, p.order_num, l.order_num
-            LIMIT 1
-        `;
+        // Get current progress / next lesson
+        // For MEP, pick the next incomplete lesson across all modules.
+        // For others, restrict to the enrolled module as before.
+        const currentProgress = isMEP
+            ? await sql`
+                SELECT
+                    w.week_id,
+                    w.title as current_week,
+                    p.project_id,
+                    p.title as current_project,
+                    l.lesson_id as next_lesson_id,
+                    l.title as next_lesson_title,
+                    COUNT(l_all.lesson_id) as total_lessons_in_project,
+                    COUNT(CASE WHEN pr_all.completed = true THEN 1 END) as completed_lessons_in_project
+                FROM lessons l
+                LEFT JOIN projects p ON l.project_id = p.project_id
+                LEFT JOIN weeks w ON p.week_id = w.week_id
+                LEFT JOIN progress pr ON l.lesson_id = pr.lesson_id AND pr.user_id = ${user_id}
+                LEFT JOIN lessons l_all ON p.project_id = l_all.project_id
+                LEFT JOIN progress pr_all ON l_all.lesson_id = pr_all.lesson_id AND pr_all.user_id = ${user_id}
+                WHERE (pr.completed IS NULL OR pr.completed = false)
+                GROUP BY w.week_id, w.title, p.project_id, p.title, l.lesson_id, l.title, l.order_num
+                ORDER BY w.order_num, p.order_num, l.order_num
+                LIMIT 1
+            `
+            : await sql`
+                SELECT
+                    w.week_id,
+                    w.title as current_week,
+                    p.project_id,
+                    p.title as current_project,
+                    l.lesson_id as next_lesson_id,
+                    l.title as next_lesson_title,
+                    COUNT(l_all.lesson_id) as total_lessons_in_project,
+                    COUNT(CASE WHEN pr_all.completed = true THEN 1 END) as completed_lessons_in_project
+                FROM lessons l
+                LEFT JOIN projects p ON l.project_id = p.project_id
+                LEFT JOIN weeks w ON p.week_id = w.week_id
+                LEFT JOIN progress pr ON l.lesson_id = pr.lesson_id AND pr.user_id = ${user_id}
+                LEFT JOIN lessons l_all ON p.project_id = l_all.project_id
+                LEFT JOIN progress pr_all ON l_all.lesson_id = pr_all.lesson_id AND pr_all.user_id = ${user_id}
+                WHERE (pr.completed IS NULL OR pr.completed = false)
+                    AND (
+                        -- Lesson has direct module match
+                        (l.module IS NOT NULL 
+                          AND l.module != ''
+                          AND (
+                              LOWER(TRIM(l.module)) = ${userModuleLower}
+                              OR LOWER(TRIM(l.module)) = ${normalizedModuleLower}
+                              OR l.module = ${userModule}
+                              OR l.module = ${normalizedModule}
+                          ))
+                        -- OR lesson's project has module match
+                        OR (p.module IS NOT NULL 
+                          AND p.module != ''
+                          AND (
+                              LOWER(TRIM(p.module)) = ${userModuleLower}
+                              OR LOWER(TRIM(p.module)) = ${normalizedModuleLower}
+                              OR p.module = ${userModule}
+                              OR p.module = ${normalizedModule}
+                          ))
+                        -- OR lesson's week has module match
+                        OR (w.module IS NOT NULL 
+                          AND w.module != ''
+                          AND (
+                              LOWER(TRIM(w.module)) = ${userModuleLower}
+                              OR LOWER(TRIM(w.module)) = ${normalizedModuleLower}
+                              OR w.module = ${userModule}
+                              OR w.module = ${normalizedModule}
+                          ))
+                    )
+                GROUP BY w.week_id, w.title, p.project_id, p.title, l.lesson_id, l.title, l.order_num
+                ORDER BY w.order_num, p.order_num, l.order_num
+                LIMIT 1
+            `;
 
         const recentActivity = await getRecentActivity(user_id);
 
@@ -2244,7 +2427,14 @@ export async function getStudentAssignments(userId, projectId = null) {
         
         const result = await query;
         console.log(`Found ${result.length} assignments for user ${userId} in module ${userModule}`);
-        return result;
+        
+        // Ensure dates are properly formatted
+        return result.map(assignment => ({
+            ...assignment,
+            due_date: assignment.due_date ? new Date(assignment.due_date).toISOString() : null,
+            created_at: assignment.created_at ? new Date(assignment.created_at).toISOString() : null,
+            updated_at: assignment.updated_at ? new Date(assignment.updated_at).toISOString() : null
+        }));
     } catch (error) {
         console.error('Error getting student assignments:', error);
         throw error;
@@ -2307,7 +2497,16 @@ export async function getAssignmentById(assignmentId, userId) {
             throw new Error('You do not have access to this assignment');
         }
         
-        return result[0];
+        const assignment = result[0];
+        
+        // Fetch files from assignment_files table
+        const AssignmentFileModel = await import('./admin/assignment_file.model.js');
+        const files = await AssignmentFileModel.getFilesByAssignment(assignmentId);
+        
+        return {
+            ...assignment,
+            files: files || []
+        };
     } catch (error) {
         console.error('Error getting assignment by ID:', error);
         throw error;
@@ -2327,8 +2526,44 @@ export async function recordAssignmentDownload(assignmentId, userId) {
     }
 }
 
+// Helper function to ensure schema exists
+async function ensureSubmissionSchema() {
+    try {
+        // Check if answer_file_url column exists
+        const columnCheck = await sql`
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name = 'assignment_submissions' 
+            AND column_name = 'answer_file_url'
+        `;
+        
+        if (columnCheck.length === 0) {
+            console.log('⚠️ Missing columns detected. Adding missing columns to assignment_submissions...');
+            
+            // Add answer_file_url
+            await sql`ALTER TABLE assignment_submissions ADD COLUMN IF NOT EXISTS answer_file_url text`;
+            await sql`UPDATE assignment_submissions SET answer_file_url = '' WHERE answer_file_url IS NULL`;
+            await sql`ALTER TABLE assignment_submissions ALTER COLUMN answer_file_url SET NOT NULL`;
+            
+            // Add other missing columns
+            await sql`ALTER TABLE assignment_submissions ADD COLUMN IF NOT EXISTS answer_file_name character varying`;
+            await sql`ALTER TABLE assignment_submissions ADD COLUMN IF NOT EXISTS file_size_bytes bigint`;
+            await sql`ALTER TABLE assignment_submissions ADD COLUMN IF NOT EXISTS status character varying DEFAULT 'submitted'`;
+            await sql`ALTER TABLE assignment_submissions ADD COLUMN IF NOT EXISTS submitted_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP`;
+            
+            console.log('✅ Schema updated successfully');
+        }
+    } catch (schemaError) {
+        console.error('⚠️ Error checking/updating schema (non-critical):', schemaError.message);
+        // Don't throw - let the insert try anyway
+    }
+}
+
 export async function createSubmission(submissionData) {
     try {
+        // Ensure schema exists before inserting
+        await ensureSubmissionSchema();
+        
         const { assignment_id, user_id, answer_file_url, answer_file_name, file_size_bytes, status } = submissionData;
         
         const result = await sql`
@@ -2346,7 +2581,7 @@ export async function createSubmission(submissionData) {
                 ${answer_file_url}, 
                 ${answer_file_name}, 
                 ${file_size_bytes}, 
-                ${status}, 
+                ${status || 'submitted'}, 
                 CURRENT_TIMESTAMP
             ) RETURNING *
         `;
@@ -2354,6 +2589,11 @@ export async function createSubmission(submissionData) {
         return result[0];
     } catch (error) {
         console.error('Error creating submission:', error);
+        console.error('Error details:', {
+            message: error.message,
+            code: error.code,
+            detail: error.detail
+        });
         throw error;
     }
 }
@@ -2393,7 +2633,6 @@ export async function getSubmissionById(submissionId) {
 
 export async function getSubmissionsByUser(userId) {
     try {
-        // Get user's enrolled modules
         let modules;
         try {
             modules = await getUserEnrolledModules(userId);
@@ -2401,110 +2640,142 @@ export async function getSubmissionsByUser(userId) {
             console.error(`Error getting enrolled modules for user ${userId}:`, enrollError);
             return [];
         }
-        
+
         if (!modules || modules.length === 0 || !modules[0]) {
             console.log(`No enrolled modules found for user ${userId} in submissions query`);
             return [];
         }
-        
+
         const userModule = modules[0];
         if (!userModule || typeof userModule !== 'string') {
             console.error(`Invalid module value for user ${userId}:`, userModule);
             return [];
         }
-        
+
         const normalizedModule = normalizeModule(userModule);
-        console.log(`Fetching submissions for user ${userId} in module: ${userModule}`);
-        
-        // Simple module matching (case-insensitive)
         const userModuleLower = (userModule || '').toLowerCase().trim();
         const normalizedModuleLower = (normalizedModule || '').toLowerCase().trim();
         const isMEP = normalizedModule === 'MEP Design';
-        
-        // Filter submissions by enrolled modules - handle both project and lesson linked assignments
-        const result = isMEP
-          ? await sql`
-            SELECT 
-                s.submission_id,
-                s.assignment_id,
-                s.answer_file_name,
-                s.file_size_bytes,
-                s.submitted_at,
-                s.grade,
-                s.feedback,
-                s.status,
-                a.title as assignment_title,
-                a.description as assignment_description,
-                COALESCE(
-                    (SELECT p.title FROM projects p WHERE p.project_id = a.project_id),
-                    (SELECT p.title FROM lessons l JOIN projects p ON l.project_id = p.project_id WHERE l.lesson_id = a.lesson_id)
-                ) as project_title,
-                ${userModule} as module
-            FROM assignment_submissions s
-            JOIN assignments a ON s.assignment_id = a.assignment_id
-            WHERE s.user_id = ${userId}
-            ORDER BY s.submitted_at DESC
-          `
-          : await sql`
-            SELECT 
-                s.submission_id,
-                s.assignment_id,
-                s.answer_file_name,
-                s.file_size_bytes,
-                s.submitted_at,
-                s.grade,
-                s.feedback,
-                s.status,
-                a.title as assignment_title,
-                a.description as assignment_description,
-                COALESCE(
-                    (SELECT p.title FROM projects p WHERE p.project_id = a.project_id),
-                    (SELECT p.title FROM lessons l JOIN projects p ON l.project_id = p.project_id WHERE l.lesson_id = a.lesson_id)
-                ) as project_title,
-                ${userModule} as module
-            FROM assignment_submissions s
-            JOIN assignments a ON s.assignment_id = a.assignment_id
-            WHERE s.user_id = ${userId}
-              AND (
-                  -- Case 1: Assignment linked to project -> week -> module
-                  (a.project_id IS NOT NULL AND EXISTS (
-                      SELECT 1 FROM projects p
-                      JOIN weeks w ON p.week_id = w.week_id
-                      WHERE p.project_id = a.project_id 
-                        AND w.module IS NOT NULL 
-                        AND w.module != ''
-                        AND (
-                            LOWER(TRIM(w.module)) = ${userModuleLower}
-                            OR LOWER(TRIM(w.module)) = ${normalizedModuleLower}
-                            OR w.module = ${userModule}
-                            OR w.module = ${normalizedModule}
+
+        let result;
+        try {
+            result = isMEP
+                ? await sql`
+                    SELECT 
+                        s.submission_id,
+                        s.assignment_id,
+                        s.answer_file_name,
+                        s.answer_file_url,
+                        s.file_size_bytes,
+                        s.submitted_at,
+                        s.grade,
+                        s.feedback,
+                        s.status,
+                        a.title as assignment_title,
+                        a.description as assignment_description,
+                        COALESCE(p.title, lp.title) as project_title,
+                        ${userModule}::text as module
+                    FROM assignment_submissions s
+                    JOIN assignments a ON s.assignment_id = a.assignment_id
+                    LEFT JOIN projects p ON a.project_id = p.project_id
+                    LEFT JOIN lessons l ON a.lesson_id = l.lesson_id
+                    LEFT JOIN projects lp ON l.project_id = lp.project_id
+                    LEFT JOIN weeks w ON COALESCE(p.week_id, lp.week_id) = w.week_id
+                    WHERE s.user_id = ${userId}
+                    ORDER BY s.submitted_at DESC
+                `
+                : await sql`
+                    SELECT 
+                        s.submission_id,
+                        s.assignment_id,
+                        s.answer_file_name,
+                        s.answer_file_url,
+                        s.file_size_bytes,
+                        s.submitted_at,
+                        s.grade,
+                        s.feedback,
+                        s.status,
+                        a.title as assignment_title,
+                        a.description as assignment_description,
+                        COALESCE(p.title, lp.title) as project_title,
+                        ${userModule}::text as module
+                    FROM assignment_submissions s
+                    JOIN assignments a ON s.assignment_id = a.assignment_id
+                    LEFT JOIN projects p ON a.project_id = p.project_id
+                    LEFT JOIN lessons l ON a.lesson_id = l.lesson_id
+                    LEFT JOIN projects lp ON l.project_id = lp.project_id
+                    LEFT JOIN weeks w ON COALESCE(p.week_id, lp.week_id) = w.week_id
+                    WHERE s.user_id = ${userId}
+                      AND (
+                        (
+                            a.module IS NOT NULL AND a.module != '' AND (
+                                LOWER(TRIM(a.module)) = ${userModuleLower}
+                                OR LOWER(TRIM(a.module)) = ${normalizedModuleLower}
+                                OR a.module = ${userModule}
+                                OR a.module = ${normalizedModule}
+                            )
                         )
-                  ))
-                  OR
-                  -- Case 2: Assignment linked to lesson -> project -> week -> module
-                  (a.lesson_id IS NOT NULL AND EXISTS (
-                      SELECT 1 FROM lessons l
-                      JOIN projects p ON l.project_id = p.project_id
-                      JOIN weeks w ON p.week_id = w.week_id
-                      WHERE l.lesson_id = a.lesson_id 
-                        AND w.module IS NOT NULL 
-                        AND w.module != ''
-                        AND (
-                            LOWER(TRIM(w.module)) = ${userModuleLower}
-                            OR LOWER(TRIM(w.module)) = ${normalizedModuleLower}
-                            OR w.module = ${userModule}
-                            OR w.module = ${normalizedModule}
+                        OR (
+                            p.module IS NOT NULL AND p.module != '' AND (
+                                LOWER(TRIM(p.module)) = ${userModuleLower}
+                                OR LOWER(TRIM(p.module)) = ${normalizedModuleLower}
+                                OR p.module = ${userModule}
+                                OR p.module = ${normalizedModule}
+                            )
                         )
-                  ))
-              )
-            ORDER BY s.submitted_at DESC
-          `;
-        
+                        OR (
+                            l.module IS NOT NULL AND l.module != '' AND (
+                                LOWER(TRIM(l.module)) = ${userModuleLower}
+                                OR LOWER(TRIM(l.module)) = ${normalizedModuleLower}
+                                OR l.module = ${userModule}
+                                OR l.module = ${normalizedModule}
+                            )
+                        )
+                        OR (
+                            w.module IS NOT NULL AND w.module != '' AND (
+                                LOWER(TRIM(w.module)) = ${userModuleLower}
+                                OR LOWER(TRIM(w.module)) = ${normalizedModuleLower}
+                                OR w.module = ${userModule}
+                                OR w.module = ${normalizedModule}
+                            )
+                        )
+                      )
+                    ORDER BY s.submitted_at DESC
+                `;
+        } catch (sqlError) {
+            console.error('SQL error in getSubmissionsByUser:', sqlError);
+            // Fallback: return submissions without module filtering
+            result = await sql`
+                SELECT 
+                    s.submission_id,
+                    s.assignment_id,
+                    s.answer_file_name,
+                    s.answer_file_url,
+                    s.file_size_bytes,
+                    s.submitted_at,
+                    s.grade,
+                    s.feedback,
+                    s.status,
+                    a.title as assignment_title,
+                    a.description as assignment_description,
+                    COALESCE(p.title, lp.title) as project_title
+                FROM assignment_submissions s
+                JOIN assignments a ON s.assignment_id = a.assignment_id
+                LEFT JOIN projects p ON a.project_id = p.project_id
+                LEFT JOIN lessons l ON a.lesson_id = l.lesson_id
+                LEFT JOIN projects lp ON l.project_id = lp.project_id
+                WHERE s.user_id = ${userId}
+                ORDER BY s.submitted_at DESC
+            `;
+        }
+
         console.log(`Found ${result.length} submissions for user ${userId} in module ${userModule}`);
         return result;
     } catch (error) {
         console.error('Error getting submissions by user:', error);
-        throw error;
+        console.error('Error stack:', error.stack);
+        // Return empty array instead of throwing to prevent 500 errors
+        return [];
     }
 }
 
@@ -2938,49 +3209,7 @@ export async function getAllModuleContent(user_id) {
             `,
 
             // Resources
-            isMEP ? sql`
-                SELECT 
-                    r.resource_id,
-                    r.title,
-                    r.type,
-                    r.content,
-                    r.file_url,
-                    r.module,
-                    r.is_public,
-                    CASE 
-                        WHEN r.is_public = true THEN 'public'
-                        WHEN r.module IS NOT NULL AND r.module != '' THEN 'module_specific'
-                        ELSE 'general'
-                    END as resource_category
-                FROM resources r
-                ORDER BY r.type, r.title
-            ` : sql`
-                SELECT 
-                    r.resource_id,
-                    r.title,
-                    r.type,
-                    r.content,
-                    r.file_url,
-                    r.module,
-                    r.is_public,
-                    CASE 
-                        WHEN r.is_public = true THEN 'public'
-                        WHEN r.module = ${userModule} THEN 'module_specific'
-                    END as resource_category
-                FROM resources r
-                WHERE (
-                    (r.is_public = true)
-                    OR (r.module IS NOT NULL 
-                      AND r.module != ''
-                      AND (
-                          LOWER(TRIM(r.module)) = ${userModuleLower}
-                          OR LOWER(TRIM(r.module)) = ${normalizedModuleLower}
-                          OR r.module = ${userModule}
-                          OR r.module = ${normalizedModule}
-                      ))
-                )
-                ORDER BY r.type, r.title
-            `
+            getResources(null, user_id)
         ]);
         
         console.log(`\n✅ [getAllModuleContent] Retrieved module content for "${userModule}":`);

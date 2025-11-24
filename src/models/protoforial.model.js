@@ -11,6 +11,32 @@ export async function createProtoforial({ full_name, email, phone, password, cou
     return rows[0];
 }
 
+export async function changeProtoforialPassword(email, currentPassword, newPassword) {
+    const rows = await sql`SELECT proto_id, password_hash FROM protoforial WHERE email = ${email} LIMIT 1`;
+    if (rows.length === 0) {
+        throw new Error('Account not found');
+    }
+    const account = rows[0];
+    const ok = await bcrypt.compare(currentPassword, account.password_hash);
+    if (!ok) {
+        throw new Error('Current password is incorrect');
+    }
+    const newHash = await bcrypt.hash(newPassword, 10);
+    await sql`UPDATE protoforial SET password_hash = ${newHash}, updated_at = NOW() WHERE proto_id = ${account.proto_id}`;
+    return { success: true };
+}
+
+export async function resetProtoforialPassword(email, newPassword) {
+    const rows = await sql`SELECT proto_id FROM protoforial WHERE email = ${email} LIMIT 1`;
+    if (rows.length === 0) {
+        throw new Error('Account not found');
+    }
+    const account = rows[0];
+    const newHash = await bcrypt.hash(newPassword, 10);
+    await sql`UPDATE protoforial SET password_hash = ${newHash}, updated_at = NOW() WHERE proto_id = ${account.proto_id}`;
+    return { success: true };
+}
+
 export async function loginProtoforial({ email, password }) {
     const rows = await sql`SELECT * FROM protoforial WHERE email = ${email} LIMIT 1`;
     if (rows.length === 0) throw new Error('Account not found');
@@ -69,6 +95,23 @@ export async function getAllProtoforial() {
         ORDER BY created_at DESC
     `;
     return rows;
+}
+
+export async function updateProfileImage(proto_id, buffer) {
+    const rows = await sql`
+        UPDATE protoforial
+        SET profile_image = ${buffer}, updated_at = NOW()
+        WHERE proto_id = ${proto_id}
+        RETURNING proto_id
+    `;
+    return rows[0] || null;
+}
+
+export async function getProfileImage(proto_id) {
+    const rows = await sql`
+        SELECT profile_image FROM protoforial WHERE proto_id = ${proto_id} LIMIT 1
+    `;
+    return rows[0] || null;
 }
 
 

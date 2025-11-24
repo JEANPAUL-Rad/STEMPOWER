@@ -11,6 +11,12 @@ router.post('/protoforial/register-with-file', upload.single('support_document')
 router.post('/protoforial/login', controller.login);
 router.get('/protoforial/me', controller.me);
 router.get('/protoforial/public', controller.getPublicProtoforial);
+router.post('/protoforial/change-password', controller.changePassword);
+router.post('/protoforial/forgot-password', controller.forgotPassword);
+
+// Profile image
+router.post('/protoforial/:proto_id/profile-image', upload.single('profile_image'), controller.uploadProfileImage);
+router.get('/protoforial/:proto_id/profile-image', controller.getProfileImage);
 
 // Profile management
 router.put('/protoforial/:proto_id', controller.update);
@@ -19,6 +25,7 @@ router.delete('/protoforial/:proto_id', controller.remove);
 router.post('/protoforial/:proto_id/support-document', upload.array('documents', 10), controller.uploadSupportDocument);
 router.get('/protoforial/:proto_id/documents', controller.listDocuments);
 router.get('/protoforial/document/:document_id/download', controller.downloadDocument);
+router.delete('/protoforial/document/:document_id', controller.deleteDocument);
 
 // Admin: update payment status
 router.patch('/protoforial/:proto_id/payment', authenticate, requireAdmin, controller.adminSetPaymentStatus);
