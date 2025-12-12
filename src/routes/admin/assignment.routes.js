@@ -28,10 +28,13 @@ router.get('/submissions/:submission_id/download', assignmentController.download
 router.post('/submissions/:submission_id/grade', assignmentController.gradeSubmission);
 router.get('/assignments/:assignment_id/download', assignmentController.downloadAssignmentFile);
 
-
-
-
+// Download all files for a submission as a zip
+router.get('/submissions/:submission_id/download-all', assignmentController.downloadAllSubmissionFiles);
 
 // Add this route  edit submission
 router.put('/submissions/:submission_id', uploadSubmission, assignmentController.editSubmission);
+// Delete submission
+router.delete('/submissions/:submission_id', assignmentController.removeSubmission);
+// Delete an individual submission file
+router.delete('/submissions/files/:file_id', assignmentController.removeSubmissionFile);
 export default router;

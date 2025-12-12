@@ -235,9 +235,21 @@ export async function updateLesson(req, res) {
 
 export async function deleteLesson(req, res) {
   try {
-    await LessonModel.deleteLesson(req.params.lesson_id);
+    const lessonId = Number(req.params.lesson_id);
+    if (!Number.isInteger(lessonId)) {
+      return res.status(400).json({ message: 'Invalid lesson ID' });
+    }
+
+    await LessonModel.deleteLesson(lessonId);
     res.json({ message: "Lesson and its sublessons deleted" });
   } catch (err) {
+    // Handle FK violations or constraint errors clearly
+    if (err && err.code === '23503') {
+      return res.status(409).json({
+        message: 'Cannot delete lesson due to linked records. Remove related assignments, files, submissions, or progress first.',
+        detail: err.detail
+      });
+    }
     res.status(500).json({ message: err.message });
   }
 }

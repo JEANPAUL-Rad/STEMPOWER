@@ -5,7 +5,7 @@ import {
   createUser, findUserByEmail, confirmUser, 
   setPasswordResetToken, findUserByResetToken, updateUserPassword 
 } from '../models/user.model.js';
-import { sendConfirmEmail, sendResetPasswordEmail } from '../services/mailService.js';
+import { sendConfirmEmail, sendResetPasswordEmail, sendTemporaryPasswordEmail } from '../services/mailService.js';
 import { createEnrollment } from '../models/enrollment.model.js';
 
 // Register: Set status to 'pending' and send confirmation email
@@ -43,46 +43,96 @@ const register = async (req, res) => {
   }
 };
 
-// Payment status for dashboard
+// Payment status for dashboard - gets data from register table
 const getPaymentStatus = async (req, res) => {
   try {
     const userId = req.user?.user_id;
     if (!userId) return res.status(401).json({ message: 'Unauthorized' });
 
-    const rows = await sql`
-      SELECT user_id, status, last_payment_date
+    // Get user info
+    const userRows = await sql`
+      SELECT user_id, status, email, role
       FROM users
       WHERE user_id = ${userId}
       LIMIT 1
     `;
-    if (rows.length === 0) return res.status(404).json({ message: 'User not found' });
+    if (userRows.length === 0) return res.status(404).json({ message: 'User not found' });
+    const user = userRows[0];
 
-    const user = rows[0];
+    // First, ensure any registrations are linked to this user
+    await sql`UPDATE register SET user_id = ${userId} WHERE email_address = ${user.email} AND user_id IS NULL`;
+
+    // Get latest paid registration from register table (case-insensitive check)
+    const paidRegistrations = await sql`
+      SELECT id, payment_status, updated_at, created_at, payment_amount, payment_reference
+      FROM register 
+      WHERE (user_id = ${userId} OR email_address = ${user.email})
+        AND UPPER(payment_status) = 'PAID'
+      ORDER BY COALESCE(updated_at, created_at) DESC, created_at DESC
+      LIMIT 1
+    `;
+
+    // Also check if user has any registration at all (for better error messages)
+    const allRegistrations = await sql`
+      SELECT id, payment_status, created_at
+      FROM register 
+      WHERE (user_id = ${userId} OR email_address = ${user.email})
+      ORDER BY created_at DESC
+      LIMIT 1
+    `;
+
     const now = new Date();
-    const lastPayment = user.last_payment_date ? new Date(user.last_payment_date) : null;
+    let lastPaymentDate = null;
     let daysSince = null;
     let blockOn = null;
     let daysUntilBlock = null;
+    let paymentAmount = null;
+    let paymentReference = null;
 
-    if (lastPayment) {
-      const diffMs = now.getTime() - lastPayment.getTime();
-      daysSince = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-      blockOn = new Date(lastPayment.getTime() + 30 * 24 * 60 * 60 * 1000);
-      const remainingMs = blockOn.getTime() - now.getTime();
-      daysUntilBlock = Math.max(0, Math.ceil(remainingMs / (1000 * 60 * 60 * 24)));
+    if (paidRegistrations.length > 0) {
+      const reg = paidRegistrations[0];
+      // Use updated_at if available (when payment was confirmed), otherwise use created_at
+      lastPaymentDate = reg.updated_at || reg.created_at;
+      paymentAmount = reg.payment_amount;
+      paymentReference = reg.payment_reference;
+
+      if (lastPaymentDate) {
+        const lastPayment = new Date(lastPaymentDate);
+        const diffMs = now.getTime() - lastPayment.getTime();
+        daysSince = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+        blockOn = new Date(lastPayment.getTime() + 30 * 24 * 60 * 60 * 1000);
+        const remainingMs = blockOn.getTime() - now.getTime();
+        daysUntilBlock = Math.max(0, Math.ceil(remainingMs / (1000 * 60 * 60 * 24)));
+      }
+    }
+
+    const isAdmin = user.role === 'admin';
+    let computedStatus = user.status;
+    if (!isAdmin) {
+      if (!lastPaymentDate) {
+        computedStatus = 'blocked';
+      } else {
+        computedStatus = (typeof daysUntilBlock === 'number' && daysUntilBlock > 0) ? 'active' : 'blocked';
+      }
     }
 
     return res.json({
       user_id: user.user_id,
-      status: user.status,
-      last_payment_date: user.last_payment_date,
+      status: computedStatus,
+      last_payment_date: lastPaymentDate ? new Date(lastPaymentDate).toISOString() : null,
+      payment_amount: paymentAmount,
+      payment_reference: paymentReference,
       block_on: blockOn ? blockOn.toISOString() : null,
       days_since_payment: daysSince,
-      days_until_block: daysUntilBlock
+      days_until_block: daysUntilBlock,
+      has_paid_registration: paidRegistrations.length > 0,
+      has_registration: allRegistrations.length > 0,
+      registration_status: allRegistrations.length > 0 ? allRegistrations[0].payment_status : null
     });
   } catch (error) {
     console.error('getPaymentStatus error:', error);
-    return res.status(500).json({ message: 'Failed to load payment status' });
+    console.error('Error details:', error.stack);
+    return res.status(500).json({ message: 'Failed to load payment status', error: process.env.NODE_ENV === 'development' ? error.message : undefined });
   }
 };
 
@@ -162,7 +212,7 @@ const confirm = async (req, res) => {
   }
 };
 
-// Login: Only allow status === 'active'
+// Login: Only allow status === 'active' and check payment status
 const login = async (req, res) => {
   const { email, password } = req.body;
   const user = await findUserByEmail(email);
@@ -181,17 +231,73 @@ const login = async (req, res) => {
   const match = await bcrypt.compare(password, user.password_hash);
   if (!match) return res.status(401).json({ message: 'Invalid credentials' });
 
+  // Check payment status from register table
+  try {
+    // First, ensure any registrations are linked to this user
+    await sql`UPDATE register SET user_id = ${user.user_id} WHERE email_address = ${user.email} AND user_id IS NULL`;
+    
+    // Get latest paid registration for this user (case-insensitive check)
+    const paidRegistrations = await sql`
+      SELECT id, payment_status, updated_at, created_at
+      FROM register 
+      WHERE (user_id = ${user.user_id} OR email_address = ${user.email})
+        AND UPPER(payment_status) = 'PAID'
+      ORDER BY COALESCE(updated_at, created_at) DESC, created_at DESC
+      LIMIT 1
+    `;
+
+    // If no paid registration found, block the user
+    if (paidRegistrations.length === 0) {
+      await sql`UPDATE users SET status = 'blocked' WHERE user_id = ${user.user_id}`;
+      return res.status(403).json({ 
+        message: 'Account blocked. No payment record found. Please complete registration and payment.' 
+      });
+    }
+
+    const lastPaidRegistration = paidRegistrations[0];
+    // Use updated_at if available (when payment was confirmed), otherwise use created_at
+    const lastPaymentDate = lastPaidRegistration.updated_at || lastPaidRegistration.created_at;
+    
+    if (!lastPaymentDate) {
+      await sql`UPDATE users SET status = 'blocked' WHERE user_id = ${user.user_id}`;
+      return res.status(403).json({ 
+        message: 'Account blocked. Invalid payment record.' 
+      });
+    }
+
+    // Check if payment is within 30 days
+    const now = new Date();
+    const paymentDate = new Date(lastPaymentDate);
+    const daysSincePayment = Math.floor((now.getTime() - paymentDate.getTime()) / (1000 * 60 * 60 * 24));
+
+    // If payment is more than 30 days old, block the user
+    if (daysSincePayment > 30) {
+      await sql`UPDATE users SET status = 'blocked' WHERE user_id = ${user.user_id}`;
+      // Update last_payment_date in users table for tracking
+      await sql`UPDATE users SET last_payment_date = ${lastPaymentDate} WHERE user_id = ${user.user_id}`;
+      return res.status(403).json({ 
+        message: `Account blocked. Payment expired. Last payment was ${daysSincePayment} days ago. Please make a new payment.` 
+      });
+    }
+
+    // Update last_payment_date in users table for tracking
+    await sql`UPDATE users SET last_payment_date = ${lastPaymentDate} WHERE user_id = ${user.user_id}`;
+  } catch (paymentCheckError) {
+    console.error('Error checking payment status during login:', paymentCheckError);
+    // Don't block login if payment check fails, but log the error
+  }
+
   // Ensure registrations are linked to this user and enrollments are created
   try {
     // Link any unlinked registrations for this email
     await sql`UPDATE register SET user_id = ${user.user_id} WHERE email_address = ${user.email} AND user_id IS NULL`;
     
-    // Check for paid registrations without enrollments
+    // Check for paid registrations without enrollments (case-insensitive)
     const paidRegistrations = await sql`
       SELECT id, module, payment_status 
       FROM register 
       WHERE email_address = ${user.email} 
-        AND payment_status = 'Paid' 
+        AND UPPER(payment_status) = 'PAID' 
         AND module IS NOT NULL
     `;
     
@@ -297,9 +403,36 @@ const checkSession = (req, res) => {
 
 // Forgot Password: Send reset link
 const forgotPassword = async (req, res) => {
-  const { email } = req.body;
+  const { email, mode } = req.body || {};
   const user = await findUserByEmail(email);
-  if (user) {
+  const preferTemp = (process.env.FORGOT_PASSWORD_MODE || '').toLowerCase() === 'temp' || mode === 'temp';
+  try {
+    if (!user) {
+      // Always respond success to avoid leaking which emails exist
+      return res.json({ message: preferTemp ? 'Temporary password generated.' : 'If an account exists with that email, a reset link has been sent.' });
+    }
+
+    if (preferTemp) {
+      // Generate a temporary password and set it immediately
+      const tempPassword = Math.random().toString(36).slice(-10);
+      const hash = await bcrypt.hash(tempPassword, 10);
+      await updateUserPassword(user.user_id, hash);
+      // Clear any existing reset tokens
+      await setPasswordResetToken(user.user_id, null, null);
+      // Email temporary password to the user
+      try {
+        await sendTemporaryPasswordEmail({ email: user.email, name: user.name, tempPassword });
+      } catch (mailErr) {
+        console.error('Failed to send temporary password email:', mailErr.message);
+      }
+      // Do not return the temp password in the response
+      return res.json({
+        message: 'Temporary password sent to your email. Use it to login, then change your password.'
+      });
+    }
+
+    // Default: generate reset link via token
+    let reset_url = undefined;
     const resetToken = jwt.sign(
       { user_id: user.user_id, email: user.email },
       process.env.JWT_SECRET,
@@ -308,12 +441,21 @@ const forgotPassword = async (req, res) => {
     const expiresAt = Date.now() + 60 * 60 * 1000;
     await setPasswordResetToken(user.user_id, resetToken, expiresAt);
     
-    // Send reset email asynchronously - don't block response if email fails
+    const FRONTEND_URL = process.env.FRONTEND_URL || process.env.CLIENT_URL || 'http://localhost:5173';
+    reset_url = `${FRONTEND_URL.replace(/\/$/, '')}/reset-password?token=${encodeURIComponent(resetToken)}`;
+    
     sendResetPasswordEmail(user.email, user.name, resetToken).catch(err => {
       console.error('Failed to send reset password email:', err.message);
     });
+    const shouldIncludeUrl = process.env.SHOW_RESET_LINK_INLINE === 'true' || process.env.NODE_ENV !== 'production';
+    return res.json({ 
+      message: "If an account exists with that email, a reset link has been sent.",
+      ...(shouldIncludeUrl && reset_url ? { reset_url } : {})
+    });
+  } catch (err) {
+    console.error('forgotPassword error:', err);
+    return res.status(500).json({ message: 'Failed to process password reset' });
   }
-  res.json({ message: "If an account exists with that email, a reset link has been sent." });
 };
 
 // Reset Password: Set new password using token

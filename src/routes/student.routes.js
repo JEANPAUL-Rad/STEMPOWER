@@ -76,11 +76,24 @@ router.post(
 
 // Update your student.routes.js to use the controller method
 // router.get('/download/submission/:submission_id', studentController.downloadSubmission);
+
+// Generic proxy download for allowed remote/local files (e.g., Cloudinary PDFs)
+router.get('/download', studentController.proxyDownload);
 // Add this route for direct lesson file download
 router.get('/lessons/:lesson_id/download', studentController.downloadLessonFile);
 // Download submission route
 router.get('/download/submission/:submission_id', studentController.downloadSubmission);
 
 router.get('/my-submissions', studentController.getMySubmissions);
+
+// Get submission details with files
+router.get('/submissions/:submission_id', studentController.getSubmissionDetails);
+
+// Edit own submission (add/remove files) before due date
+router.put('/submissions/:submission_id', uploadSubmission, handleUploadErrors, studentController.editMySubmission);
+// Remove a specific file from own submission
+router.delete('/submissions/files/:file_id', studentController.removeMySubmissionFile);
+// Delete entire submission (owner only, typically before due date)
+router.delete('/submissions/:submission_id', studentController.deleteMySubmission);
 
 export default router;

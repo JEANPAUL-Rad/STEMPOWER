@@ -209,6 +209,7 @@ export const recordDownload = async (assignmentId, userId) => {
 // Get assignment submissions
 export const getAssignmentSubmissions = async (assignmentId) => {
   try {
+    // First get all submissions
     const result = await sql`
       SELECT 
         sub.*,
@@ -222,11 +223,34 @@ export const getAssignmentSubmissions = async (assignmentId) => {
       ORDER BY sub.submitted_at DESC
     `;
 
-    return result.map(submission => ({
-      ...submission,
-      submitted_at_cat: parseDBTimestamp(submission.submitted_at),
-      graded_at_cat: parseDBTimestamp(submission.graded_at)
-    }));
+    // For each submission, get the associated files
+    const submissionsWithFiles = await Promise.all(
+      result.map(async (submission) => {
+        const files = await sql`
+          SELECT 
+            file_id, 
+            file_url, 
+            file_name, 
+            file_size_bytes,
+            uploaded_at
+          FROM assignment_submission_files
+          WHERE submission_id = ${submission.submission_id}
+          ORDER BY uploaded_at
+        `;
+
+        return {
+          ...submission,
+          submitted_at_cat: parseDBTimestamp(submission.submitted_at),
+          graded_at_cat: parseDBTimestamp(submission.graded_at),
+          files: files.map(file => ({
+            ...file,
+            uploaded_at_cat: parseDBTimestamp(file.uploaded_at)
+          }))
+        };
+      })
+    );
+
+    return submissionsWithFiles;
   } catch (error) {
     console.error('Error getting assignment submissions:', error);
     throw error;
@@ -326,6 +350,26 @@ export const updateSubmission = async (submissionId, updateData) => {
     return result[0];
   } catch (error) {
     console.error('Error updating submission:', error);
+    throw error;
+  }
+};
+
+// Delete submission (and its files)
+export const deleteSubmission = async (submissionId) => {
+  try {
+    // Remove files first to satisfy FKs
+    await sql`
+      DELETE FROM assignment_submission_files
+      WHERE submission_id = ${submissionId}
+    `;
+    // Remove the submission
+    await sql`
+      DELETE FROM assignment_submissions
+      WHERE submission_id = ${submissionId}
+    `;
+    return true;
+  } catch (error) {
+    console.error('Error deleting submission:', error);
     throw error;
   }
 };

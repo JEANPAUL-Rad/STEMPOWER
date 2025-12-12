@@ -55,17 +55,18 @@ export const listRegistrations = async ({ limit = 50, offset = 0 } = {}) => {
 };
 
 export const updatePayment = async (id, { payment_status, payment_reference = null, payment_method = null, payment_amount = null }) => {
-	const rows = await sql`
-		UPDATE register
-		SET
-			payment_status = COALESCE(${payment_status}, payment_status),
-			payment_reference = COALESCE(${payment_reference}, payment_reference),
-			payment_method = COALESCE(${payment_method}, payment_method),
-			payment_amount = COALESCE(${payment_amount}, payment_amount)
-		WHERE id = ${id}
-		RETURNING *
-	`;
-	return rows[0] || null;
+    const rows = await sql`
+        UPDATE register
+        SET
+            payment_status = COALESCE(${payment_status}, payment_status),
+            payment_reference = COALESCE(${payment_reference}, payment_reference),
+            payment_method = COALESCE(${payment_method}, payment_method),
+            payment_amount = COALESCE(${payment_amount}::numeric, payment_amount),
+            updated_at = CASE WHEN UPPER(${payment_status}::text) = 'PAID' THEN CURRENT_TIMESTAMP ELSE updated_at END
+        WHERE id = ${id}
+        RETURNING *
+    `;
+    return rows[0] || null;
 };
 
 export const updateRegistration = async (id, { full_name, email_address, contact_number, level_of_archicad_skills, module, payment_amount }) => {
@@ -88,5 +89,3 @@ export const deleteRegistration = async (id) => {
 	const rows = await sql`DELETE FROM register WHERE id = ${id} RETURNING *`;
 	return rows[0] || null;
 };
-
-

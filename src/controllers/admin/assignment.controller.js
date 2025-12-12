@@ -5,7 +5,11 @@ import path from 'path';
 import fs from 'fs';
 import mime from 'mime-types';
 import { saveFile, saveAssignmentFile, saveSubmissionFile } from '../../utils/saveFile.js';
-import { extractPublicId, generateDownloadUrl } from '../../utils/downloadFile.js'; 
+import { extractPublicId, generateDownloadUrl } from '../../utils/downloadFile.js';
+import archiver from 'archiver';
+import { PassThrough } from 'stream';
+import { getFilesBySubmission } from '../../models/admin/assignment_submission_file.model.js';
+import axios from 'axios';
 
 // Get all assignments
 export const getAllAssignments = async (req, res) => {
@@ -24,6 +28,24 @@ export const getAllAssignments = async (req, res) => {
   }
 };
 
+// Delete a single submission file by file_id
+export const removeSubmissionFile = async (req, res) => {
+  try {
+    const { file_id } = req.params;
+    if (!file_id) {
+      return res.status(400).json({ success: false, message: 'file_id is required' });
+    }
+    // Attempt delete; ignore if already gone
+    await SubmissionFileModel.deleteFile(Number(file_id));
+    res.json({ success: true, message: 'File removed from submission' });
+  } catch (error) {
+    console.error('Error deleting submission file:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete submission file: ' + error.message
+    });
+  }
+};
 // JSON-only due date update (no file upload)
 export const updateAssignmentDueDate = async (req, res) => {
   try {
@@ -300,15 +322,26 @@ export const getAssignmentSubmissions = async (req, res) => {
     const { assignment_id } = req.params;
     const submissions = await AssignmentModel.getAssignmentSubmissions(assignment_id);
     
+    // Transform the data to match the frontend's expected format
+    const formattedSubmissions = submissions.map(submission => ({
+      ...submission,
+      // Keep the original file info for backward compatibility
+      answer_file_url: submission.answer_file_url || (submission.files?.[0]?.file_url || ''),
+      answer_file_name: submission.answer_file_name || (submission.files?.[0]?.file_name || ''),
+      // Add the files array
+      files: submission.files || []
+    }));
+
     res.json({
       success: true,
-      data: submissions
+      data: formattedSubmissions
     });
   } catch (error) {
     console.error('Error fetching submissions:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to fetch submissions'
+      message: 'Failed to fetch submissions',
+      error: process.env.NODE_ENV !== 'production' ? error.message : undefined
     });
   }
 };
@@ -369,6 +402,89 @@ export const downloadSubmissionFile = async (req, res) => {
       success: false, 
       message: 'Failed to get download link' 
     });
+  }
+};
+
+// Download all files for a submission as a zip
+// Endpoint: GET /api/admin/submissions/:submission_id/download-all
+export const downloadAllSubmissionFiles = async (req, res) => {
+  try {
+    const { submission_id } = req.params;
+    
+    // Get submission details
+    const submission = await AssignmentModel.getSubmissionById(submission_id);
+    if (!submission) {
+      return res.status(404).json({
+        success: false,
+        message: 'Submission not found'
+      });
+    }
+
+    // Get all files for this submission
+    const files = await getFilesBySubmission(submission_id);
+    
+    if (!files || files.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'No files found for this submission'
+      });
+    }
+
+    // Set headers for zip file download
+    const zipFileName = `submission-${submission_id}-files.zip`;
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${zipFileName}"`);
+    
+    // Create a new archive
+    const archive = archiver('zip', {
+      zlib: { level: 9 } // Maximum compression
+    });
+
+    // Handle errors during archiving
+    archive.on('error', (err) => {
+      console.error('Error creating zip archive:', err);
+      if (!res.headersSent) {
+        res.status(500).json({
+          success: false,
+          message: 'Error creating zip archive'
+        });
+      }
+    });
+
+    // Pipe the archive to the response
+    archive.pipe(res);
+
+    // Helper function to add a file to the archive
+    const addFileToArchive = async (file) => {
+      try {
+        // Get the file content
+        const response = await axios.get(file.file_url, { responseType: 'arraybuffer' });
+        
+        // Add file to archive with original filename
+        archive.append(Buffer.from(response.data), { 
+          name: file.file_name || `file-${file.file_id}`
+        });
+      } catch (err) {
+        console.error(`Error adding file ${file.file_id} to archive:`, err);
+        // Continue with other files even if one fails
+      }
+    };
+
+    // Add all files to the archive
+    await Promise.all(files.map(file => addFileToArchive(file)));
+
+    // Finalize the archive
+    await archive.finalize();
+
+  } catch (error) {
+    console.error('Error downloading submission files:', error);
+    if (!res.headersSent) {
+      res.status(500).json({
+        success: false,
+        message: 'Failed to download submission files',
+        error: process.env.NODE_ENV !== 'production' ? error.message : undefined
+      });
+    }
   }
 };
 
@@ -543,6 +659,26 @@ export const editSubmission = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to edit submission: ' + error.message
+    });
+  }
+};
+
+// Delete a submission
+export const removeSubmission = async (req, res) => {
+  try {
+    const { submission_id } = req.params;
+    // Ensure it exists
+    const existing = await AssignmentModel.getSubmissionById(submission_id);
+    if (!existing) {
+      return res.status(404).json({ success: false, message: 'Submission not found' });
+    }
+    await AssignmentModel.deleteSubmission(submission_id);
+    res.json({ success: true, message: 'Submission deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting submission:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete submission: ' + error.message
     });
   }
 };

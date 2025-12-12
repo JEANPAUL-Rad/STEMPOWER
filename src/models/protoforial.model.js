@@ -116,18 +116,18 @@ export async function getProfileImage(proto_id) {
 
 
 // Documents (multiple, stored as BYTEA)
-export async function addDocument(proto_id, { filename, mime_type, buffer }) {
+export async function addDocument(proto_id, { filename, mime_type, buffer, description, category }) {
     const rows = await sql`
-        INSERT INTO protoforial_documents (proto_id, filename, mime_type, data)
-        VALUES (${proto_id}, ${filename}, ${mime_type}, ${buffer})
-        RETURNING document_id, filename, mime_type, created_at
+        INSERT INTO protoforial_documents (proto_id, filename, mime_type, data, description, category)
+        VALUES (${proto_id}, ${filename}, ${mime_type}, ${buffer}, ${description}, ${category || null})
+        RETURNING document_id, filename, mime_type, description, category, created_at
     `;
     return rows[0];
 }
 
 export async function getDocuments(proto_id) {
     const rows = await sql`
-        SELECT document_id, filename, mime_type, created_at
+        SELECT document_id, filename, mime_type, description, category, created_at
         FROM protoforial_documents
         WHERE proto_id = ${proto_id}
         ORDER BY created_at DESC
@@ -137,7 +137,7 @@ export async function getDocuments(proto_id) {
 
 export async function getDocumentData(document_id) {
     const rows = await sql`
-        SELECT document_id, filename, mime_type, data FROM protoforial_documents WHERE document_id = ${document_id}
+        SELECT document_id, filename, mime_type, description, category, data, created_at FROM protoforial_documents WHERE document_id = ${document_id}
     `;
     return rows[0] || null;
 }

@@ -30,31 +30,29 @@ import { error } from '../utils/response.util.js';
  * Authentication middleware that checks both session and JWT token
  */
 export function authenticate(req, res, next) {
-  // 1. First check session (for cookie-based auth)
+  // Prefer JWT token first (API requests)
+  const token = getTokenFromRequest(req);
+
+  if (token) {
+    jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
+      if (err) {
+        return error(res, 'Invalid or expired token', 401);
+      }
+      req.user = decoded;
+      // Optionally set session, but token remains the source of truth per request
+      req.session.user = decoded;
+      return next();
+    });
+    return; // ensure we don't fall through
+  }
+
+  // Fallback to session (cookie-based auth)
   if (req.session?.user) {
     req.user = req.session.user;
     return next();
   }
 
-  // 2. Fall back to JWT token (for API requests)
-  const token = getTokenFromRequest(req);
-  
-  if (!token) {
-    return error(res, 'Authentication required. No valid session or token found.', 401);
-  }
-
-  // Verify JWT token
-  jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
-    if (err) {
-      return error(res, 'Invalid or expired token', 401);
-    }
-    
-    // Set user in both request object and session
-    req.user = decoded;
-    req.session.user = decoded;
-    
-    next();
-  });
+  return error(res, 'Authentication required. No valid token or session found.', 401);
 }
 
 /**
@@ -95,13 +93,8 @@ export function requireRole(allowedRoles) {
  * Sets req.user if authenticated, but doesn't block if not
  */
 export function optionalAuth(req, res, next) {
-  if (req.session?.user) {
-    req.user = req.session.user;
-    return next();
-  }
-
   const token = getTokenFromRequest(req);
-  
+
   if (token) {
     jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
       if (!err) {
@@ -110,9 +103,13 @@ export function optionalAuth(req, res, next) {
       }
       next();
     });
-  } else {
-    next();
+    return;
   }
+
+  if (req.session?.user) {
+    req.user = req.session.user;
+  }
+  next();
 }
 
 /**
@@ -143,24 +140,20 @@ function getTokenFromRequest(req) {
  * Useful for routes that need to know auth state but don't require it
  */
 export function checkAuthState(req, res, next) {
+  const token = getTokenFromRequest(req);
+  if (token) {
+    return jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
+      if (err) return res.json({ isAuthenticated: false });
+      req.user = decoded;
+      req.session.user = decoded;
+      return res.json({ isAuthenticated: true, user: decoded });
+    });
+  }
+
   if (req.session?.user) {
     req.user = req.session.user;
     return res.json({ isAuthenticated: true, user: req.user });
   }
 
-  const token = getTokenFromRequest(req);
-  
-  if (!token) {
-    return res.json({ isAuthenticated: false });
-  }
-
-  jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
-    if (err) {
-      return res.json({ isAuthenticated: false });
-    }
-    
-    req.user = decoded;
-    req.session.user = decoded;
-    res.json({ isAuthenticated: true, user: decoded });
-  });
+  return res.json({ isAuthenticated: false });
 }

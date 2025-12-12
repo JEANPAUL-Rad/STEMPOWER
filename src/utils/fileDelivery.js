@@ -1,8 +1,11 @@
 import fs from 'fs';
 import path from 'path';
 import cloudinary from './cloudinary.js';
+import https from 'https';
+import http from 'http';
 
 export const isRemoteUrl = (url = '') => /^https?:\/\//i.test(url);
+const isCloudinaryUrl = (url = '') => /^https?:\/\/res\.cloudinary\.com\//i.test(url);
 
 export const resolveLocalDownloadPath = (fileUrl = '') => {
   if (!fileUrl) return null;
@@ -26,11 +29,13 @@ export const resolveLocalDownloadPath = (fileUrl = '') => {
 };
 
 const extractCloudinaryPublicId = (url = '') => {
-  const cloudinaryRegex = /^https?:\/\/res\.cloudinary\.com\/([^/]+)\/([^/]+)\/upload\/(.+)$/i;
+  // Support singular/plural resource type paths and optional version
+  const cloudinaryRegex = /^https?:\/\/res\.cloudinary\.com\/([^/]+)\/(image|images|video|videos|raw|auto)\/upload\/(.+)$/i;
   const match = url.match(cloudinaryRegex);
   if (!match) return null;
 
-  const [, , resourceType, suffix] = match;
+  const [, , resourceTypeRaw, suffix] = match;
+  const resourceType = resourceTypeRaw.replace(/s$/, ''); // normalize images->image, videos->video
   const [pathWithVersion] = suffix.split(/[?#]/);
   const withoutVersion = pathWithVersion.replace(/^v\d+\//, '');
   const lastDot = withoutVersion.lastIndexOf('.');
@@ -41,19 +46,77 @@ const extractCloudinaryPublicId = (url = '') => {
   return { resourceType, publicId, format };
 };
 
-export const generateCloudinaryDownloadUrl = (fileUrl, downloadName) => {
-  const meta = extractCloudinaryPublicId(fileUrl);
-  if (!meta) return null;
+// Insert fl_attachment (optionally with a filename) right after /upload/
+const addAttachmentTransformation = (url = '', fileName) => {
+  if (!isCloudinaryUrl(url)) return null;
+  // Preserve any existing transformations by inserting fl_attachment first
+  // e.g., .../upload/ -> .../upload/fl_attachment[:filename]/
+  const encodedName = fileName ? encodeURIComponent(fileName) : '';
+  const attachSegment = `fl_attachment${encodedName ? `:${encodedName}` : ''}`;
+  return url.replace(/\/upload\/(?!fl_attachment)/, `/upload/${attachSegment}/`);
+};
 
-  try {
-    return cloudinary.utils.private_download_url(meta.publicId, meta.format, {
-      resource_type: meta.resourceType || 'raw',
-      attachment: downloadName || undefined,
-    });
-  } catch (err) {
-    console.error('Cloudinary download URL generation failed:', err.message);
-    return null;
+export const generateCloudinaryCandidateUrls = (fileUrl, downloadName) => {
+  const meta = extractCloudinaryPublicId(fileUrl);
+  if (!meta) return [];
+
+  const primaryResourceType = meta.resourceType || 'raw';
+  const candidateTypes = Array.from(new Set([primaryResourceType, 'raw', 'image', 'video', 'auto']));
+  const publicIdWithFormat = meta.format ? `${meta.publicId}.${meta.format}` : meta.publicId;
+  const candidates = [];
+  const authTokenKey = process.env.CLOUDINARY_AUTH_TOKEN_KEY || process.env.CLD_AUTH_TOKEN_KEY;
+  const commonAuthToken = authTokenKey
+    ? { auth_token: { key: authTokenKey, duration: 300 } }
+    : {};
+
+  for (const resourceType of candidateTypes) {
+    try {
+      // 1) Authenticated delivery (signed URL)
+      const authUrl = cloudinary.url(publicIdWithFormat, {
+        resource_type: resourceType,
+        type: 'authenticated',
+        sign_url: true,
+        secure: true,
+        ...commonAuthToken,
+      });
+      if (authUrl) candidates.push(authUrl);
+    } catch (err) {
+      console.error(`Cloudinary authenticated URL generation failed (${resourceType}):`, err.message);
+    }
+
+    try {
+      // 2) Private asset download URL
+      const privateUrl = cloudinary.utils.private_download_url(meta.publicId, meta.format, {
+        resource_type: resourceType,
+        attachment: downloadName || undefined,
+      });
+      if (privateUrl) candidates.push(privateUrl);
+    } catch (err) {
+      console.error(`Cloudinary private download URL generation failed (${resourceType}):`, err.message);
+    }
+
+    try {
+      // 3) Signed upload delivery (in case asset is public/upload but requires signing/passthrough)
+      const signedUploadUrl = cloudinary.url(publicIdWithFormat, {
+        resource_type: resourceType,
+        type: 'upload',
+        sign_url: true,
+        secure: true,
+        ...commonAuthToken,
+      });
+      if (signedUploadUrl) candidates.push(signedUploadUrl);
+    } catch (err) {
+      console.error(`Cloudinary signed upload URL generation failed (${resourceType}):`, err.message);
+    }
   }
+
+  return candidates;
+};
+
+// Backwards-compat shim (used by getResolvedFileUrl)
+export const generateCloudinaryDownloadUrl = (fileUrl, downloadName) => {
+  const list = generateCloudinaryCandidateUrls(fileUrl, downloadName);
+  return list[0] || null;
 };
 
 export const getResolvedFileUrl = (fileUrl, fileName) => {
@@ -62,14 +125,76 @@ export const getResolvedFileUrl = (fileUrl, fileName) => {
   return generateCloudinaryDownloadUrl(fileUrl, fileName) || fileUrl;
 };
 
-export const streamOrRedirect = (res, fileUrl, downloadName, notFoundMessage = 'File not found on server.') => {
+const streamRemote = (res, url, downloadName, maxRedirects = 3, options = {}) => {
+  return new Promise((resolve, reject) => {
+    const doRequest = (currentUrl, redirectsLeft) => {
+      const client = currentUrl.startsWith('https') ? https : http;
+      const req = client.get(currentUrl, (upstream) => {
+        // Follow redirects
+        if ([301, 302, 303, 307, 308].includes(upstream.statusCode) && upstream.headers.location && redirectsLeft > 0) {
+          upstream.resume(); // discard
+          const nextUrl = upstream.headers.location.startsWith('http')
+            ? upstream.headers.location
+            : new URL(upstream.headers.location, currentUrl).toString();
+          return doRequest(nextUrl, redirectsLeft - 1);
+        }
+        if (upstream.statusCode && upstream.statusCode >= 400) {
+          upstream.resume();
+          return reject(new Error(`Upstream responded ${upstream.statusCode}`));
+        }
+        let contentType = upstream.headers['content-type'] || (currentUrl.endsWith('.pdf') ? 'application/pdf' : 'application/octet-stream');
+        const dispositionName = downloadName || currentUrl.split('/').pop() || 'file';
+        // Prefer inline for PDFs so browser viewers work; attachment otherwise
+        const nameLooksPdf = typeof dispositionName === 'string' && /\.pdf$/i.test(dispositionName);
+        const urlLooksPdf = /\.pdf($|\?)/i.test(currentUrl);
+        const upstreamLooksPdf = typeof contentType === 'string' && contentType.toLowerCase().includes('pdf');
+        const isPdf = upstreamLooksPdf || urlLooksPdf || nameLooksPdf;
+        if (isPdf && contentType !== 'application/pdf') {
+          contentType = 'application/pdf';
+        }
+        res.setHeader('Content-Type', contentType);
+        // Compute final disposition: allow override via options
+        const forceAttachment = options.forceAttachment === true;
+        const forceInline = options.forceInline === true;
+        let dispositionType = isPdf ? 'inline' : 'attachment';
+        if (forceAttachment) dispositionType = 'attachment';
+        if (forceInline) dispositionType = 'inline';
+        // Set both filename and RFC5987 filename* for better Unicode/space handling
+        const contentDisposition = `${dispositionType}; filename="${dispositionName}"; filename*=UTF-8''${encodeURIComponent(dispositionName)}`;
+        res.setHeader('Content-Disposition', contentDisposition);
+        upstream.pipe(res);
+        upstream.on('end', resolve);
+        upstream.on('error', reject);
+      });
+      req.on('error', reject);
+    };
+    doRequest(url, maxRedirects);
+  });
+};
+
+export const streamOrRedirect = async (res, fileUrl, downloadName, notFoundMessage = 'File not found on server.', options = {}) => {
   if (!fileUrl) {
     return res.status(404).json({ message: notFoundMessage });
   }
 
   if (isRemoteUrl(fileUrl)) {
-    const signed = generateCloudinaryDownloadUrl(fileUrl, downloadName);
-    return res.redirect(signed || fileUrl);
+    const candidates = [];
+    // If Cloudinary URL, try an fl_attachment URL first (works for public assets)
+    if (isCloudinaryUrl(fileUrl)) {
+      const attachUrl = addAttachmentTransformation(fileUrl, downloadName);
+      if (attachUrl) candidates.push(attachUrl);
+    }
+    candidates.push(...generateCloudinaryCandidateUrls(fileUrl, downloadName), fileUrl);
+    for (let i = 0; i < candidates.length; i++) {
+      try {
+        await streamRemote(res, candidates[i], downloadName, 3, options);
+        return;
+      } catch (err) {
+        console.error(`Remote stream failed for candidate ${i + 1}:`, err.message);
+      }
+    }
+    // Final fallback: redirect to the original URL
+    return res.redirect(fileUrl);
   }
 
   const filePath = resolveLocalDownloadPath(fileUrl);
@@ -87,6 +212,8 @@ export const streamOrRedirect = (res, fileUrl, downloadName, notFoundMessage = '
     }
   });
 };
+
+
 
 
 

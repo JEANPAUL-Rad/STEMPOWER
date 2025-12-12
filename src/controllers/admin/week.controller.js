@@ -48,7 +48,12 @@ export async function updateWeek(req, res) {
 
 export async function deleteWeek(req, res) {
   try {
-    await WeekModel.deleteWeek(req.params.week_id);
+    const weekId = Number(req.params.week_id);
+    if (!Number.isInteger(weekId)) {
+      return res.status(400).json({ message: 'Invalid week ID' });
+    }
+
+    await WeekModel.deleteWeek(weekId);
     res.json({ message: "Week deleted" });
   } catch (err) {
     // Handle FK violation (projects referencing this week)

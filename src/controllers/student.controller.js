@@ -1079,6 +1079,242 @@ export async function downloadSubmission(req, res) {
 }
 
 
+export async function getSubmissionDetails(req, res) {
+  try {
+    const submissionId = parseInt(req.params.submission_id, 10);
+    const userId = req.user.user_id;
+
+    if (isNaN(submissionId)) {
+      return res.status(400).json({ success: false, message: 'Invalid submission ID' });
+    }
+
+    console.log('Getting submission details for ID:', submissionId);
+    
+    // Get submission details
+    const submission = await Student.getSubmissionById(submissionId);
+    if (!submission) {
+      console.log('Submission not found for ID:', submissionId);
+      return res.status(404).json({ success: false, message: 'Submission not found' });
+    }
+
+    // Verify ownership
+    if (submission.user_id !== userId && !['admin', 'teacher'].includes(req.user.role)) {
+      console.log('Access denied for user:', userId, 'on submission:', submissionId);
+      return res.status(403).json({ success: false, message: 'Access denied' });
+    }
+
+    // Get submission files
+    console.log('Fetching files for submission:', submissionId);
+    const files = await Student.getSubmissionFiles(submissionId);
+    console.log('Files found:', files);
+
+    // Format response
+    const response = {
+      success: true,
+      data: {
+        submission: {
+          id: submission.submission_id,
+          assignment_id: submission.assignment_id,
+          assignment_title: submission.assignment_title,
+          user_id: submission.user_id,
+          submitted_at: submission.submitted_at,
+          grade: submission.grade,
+          feedback: submission.feedback,
+          status: submission.status,
+          updated_at: submission.updated_at,
+          updated_by_admin: submission.updated_by_admin
+        },
+        files: files || []  // Ensure files is always an array
+      }
+    };
+
+    console.log('Sending response for submission:', submissionId);
+    return res.json(response);
+  } catch (error) {
+    console.error('Error in getSubmissionDetails:', error);
+    console.error('Error stack:', error.stack);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to get submission details',
+      error: process.env.NODE_ENV !== 'production' ? error.message : undefined
+    });
+  }
+}
+
+// Delete own submission
+export async function deleteMySubmission(req, res) {
+  try {
+    const submissionId = parseInt(req.params.submission_id, 10);
+    const userId = req.user.user_id;
+    if (isNaN(submissionId)) {
+      return res.status(400).json({ success: false, message: 'Invalid submission ID' });
+    }
+    const submission = await Student.getSubmissionById(submissionId);
+    if (!submission) {
+      return res.status(404).json({ success: false, message: 'Submission not found' });
+    }
+    if (submission.user_id !== userId && !['admin', 'teacher'].includes(req.user.role)) {
+      return res.status(403).json({ success: false, message: 'You can only delete your own submission' });
+    }
+    // Optionally block delete after due date
+    const assignment = await AssignmentModel.getAssignmentById(submission.assignment_id);
+    if (assignment && assignment.due_date) {
+      const now = new Date();
+      const due = new Date(assignment.due_date);
+      if (now > due) {
+        return res.status(400).json({ success: false, message: 'Submission deadline has passed' });
+      }
+    }
+    await AssignmentModel.deleteSubmission(submissionId);
+    return res.json({ success: true, message: 'Submission deleted successfully' });
+  } catch (error) {
+    console.error('Error in deleteMySubmission:', error);
+    return res.status(500).json({ success: false, message: 'Failed to delete submission', error: error.message });
+  }
+}
+// Allow student to edit their own submission (add/remove files) if before due date
+export async function editMySubmission(req, res) {
+  try {
+    const { submission_id } = req.params;
+    const userId = req.user.user_id;
+    if (!submission_id) {
+      return res.status(400).json({ success: false, message: 'submission_id is required' });
+    }
+
+    // Load submission and ensure ownership
+    const submission = await Student.getSubmissionById(parseInt(submission_id, 10));
+    if (!submission) {
+      return res.status(404).json({ success: false, message: 'Submission not found' });
+    }
+    if (submission.user_id !== userId && !['admin', 'teacher'].includes(req.user.role)) {
+      return res.status(403).json({ success: false, message: 'You can only edit your own submission' });
+    }
+
+    // Check due date not passed
+    const assignment = await AssignmentModel.getAssignmentById(submission.assignment_id);
+    if (assignment && assignment.due_date) {
+      const now = new Date();
+      const due = new Date(assignment.due_date);
+      if (now > due) {
+        return res.status(400).json({ success: false, message: 'Submission deadline has passed' });
+      }
+    }
+
+    // Collect uploaded files (support multiple)
+    const files = Array.isArray(req.files) ? req.files : (req.file ? [req.file] : []);
+
+    // If nothing to change
+    if (files.length === 0 && !req.body.remove_file_ids) {
+      return res.status(400).json({ success: false, message: 'No changes provided. Upload files or specify remove_file_ids.' });
+    }
+
+    // Add files
+    let addedFiles = [];
+    if (files.length > 0) {
+      const uploaded = [];
+      for (const f of files) {
+        const url = await saveSubmissionFile(f);
+        uploaded.push({ url, name: f.originalname, size: f.size });
+      }
+      const SubmissionFileModel = await import('../models/admin/assignment_submission_file.model.js');
+      addedFiles = await SubmissionFileModel.addSubmissionFiles(submission_id, uploaded, userId);
+    }
+
+    // Remove files
+    if (req.body.remove_file_ids) {
+      const SubmissionFileModel = await import('../models/admin/assignment_submission_file.model.js');
+      const ids = Array.isArray(req.body.remove_file_ids)
+        ? req.body.remove_file_ids
+        : String(req.body.remove_file_ids).split(',').map(s => s.trim()).filter(Boolean);
+      for (const id of ids) {
+        await SubmissionFileModel.deleteFile(Number(id));
+      }
+    }
+
+    // Return current files
+    const filesNow = await Student.getSubmissionFiles(parseInt(submission_id, 10));
+    return res.json({
+      success: true,
+      message: 'Submission updated successfully',
+      data: {
+        submission: {
+          id: submission.submission_id,
+          assignment_id: submission.assignment_id,
+          assignment_title: submission.assignment_title,
+          submitted_at: submission.submitted_at,
+          grade: submission.grade,
+          feedback: submission.feedback,
+          status: submission.status
+        },
+        files: filesNow,
+        addedFiles
+      }
+    });
+  } catch (error) {
+    console.error('Error in editMySubmission:', error);
+    return res.status(500).json({ success: false, message: 'Failed to edit submission', error: error.message });
+  }
+}
+
+// Allow student to remove a specific file from their submission
+export async function removeMySubmissionFile(req, res) {
+  try {
+    const { file_id } = req.params;
+    const userId = req.user.user_id;
+    if (!file_id) {
+      return res.status(400).json({ success: false, message: 'file_id is required' });
+    }
+    // Verify file belongs to user's submission
+    const submissionIdResult = await Student.getSubmissionIdByFileId(Number(file_id));
+    if (!submissionIdResult) {
+      return res.status(404).json({ success: false, message: 'File not found' });
+    }
+    const submission = await Student.getSubmissionById(submissionIdResult);
+    if (!submission || submission.user_id !== userId) {
+      return res.status(403).json({ success: false, message: 'You can only modify your own submission files' });
+    }
+    // Check due date
+    const assignment = await AssignmentModel.getAssignmentById(submission.assignment_id);
+    if (assignment && assignment.due_date && new Date() > new Date(assignment.due_date)) {
+      return res.status(400).json({ success: false, message: 'Submission deadline has passed' });
+    }
+    const SubmissionFileModel = await import('../models/admin/assignment_submission_file.model.js');
+    await SubmissionFileModel.deleteFile(Number(file_id));
+    return res.json({ success: true, message: 'File removed from submission' });
+  } catch (error) {
+    console.error('Error in removeMySubmissionFile:', error);
+    return res.status(500).json({ success: false, message: 'Failed to remove file', error: error.message });
+  }
+}
+export async function getSubmissionFiles(submissionId) {
+    try {
+        const files = await sql`
+            SELECT 
+                file_id,
+                submission_id,
+                file_name,
+                file_url,
+                file_size_bytes,
+                file_type,
+                created_at
+            FROM assignment_submission_files
+            WHERE submission_id = ${submissionId}
+            ORDER BY created_at ASC
+        `;
+        
+        return files.map(file => ({
+            id: file.file_id,
+            name: file.file_name,
+            url: file.file_url,
+            size: file.file_size_bytes,
+            type: file.file_type,
+            uploadedAt: file.created_at
+        }));
+    } catch (error) {
+        console.error('Error getting submission files:', error);
+        throw error;
+    }
+}
 export async function downloadLessonFile(req, res) {
   try {
     const lessonId = parseInt(req.params.lesson_id);
@@ -1103,3 +1339,30 @@ export async function downloadLessonFile(req, res) {
   }
 }
 
+// Generic safe proxy download for allowed URLs (e.g., Cloudinary or local /uploads)
+export async function proxyDownload(req, res) {
+  try {
+    const { url, name } = req.query;
+    if (!url) return res.status(400).json({ message: 'url query is required' });
+    const decoded = decodeURIComponent(url);
+    // Allow only Cloudinary or local uploads
+    try {
+      const u = new URL(decoded, 'http://dummy.base');
+      const host = u.host;
+      const isCloudinary = /(^|\.)res\.cloudinary\.com$/i.test(host);
+      const isUploads = decoded.startsWith('/uploads/') || decoded.includes('/uploads/');
+      if (!isCloudinary && !isUploads) {
+        return res.status(400).json({ message: 'URL not allowed' });
+      }
+    } catch {
+      // If relative path (e.g., /uploads/...), allow
+      if (!(decoded.startsWith('/uploads/'))) {
+        return res.status(400).json({ message: 'Invalid url' });
+      }
+    }
+    return streamOrRedirect(res, decoded, name || undefined, 'File not found');
+  } catch (error) {
+    console.error('Proxy download error:', error);
+    res.status(500).json({ message: 'Internal server error during download', error: error.message });
+  }
+}

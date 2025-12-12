@@ -9,12 +9,273 @@ const connectionString = process.env.DATABASE_URL;
 // Only log queries in development mode or if DB_DEBUG is explicitly enabled
 const shouldLogQueries = process.env.NODE_ENV === 'development' || process.env.DB_DEBUG === 'true';
 
-const sql = postgres(connectionString, {
+// Connection pool configuration to prevent "max clients reached" errors
+// 
+// IMPORTANT: For Supabase, you have THREE connection types:
+// 
+// 1. DIRECT CONNECTION (db.xxxxx.supabase.co:5432)
+//    - Limited to 1-4 connections (typically 2 on free tier)
+//    - No pgbouncer support
+//    - Connection pool automatically set to 2 to prevent errors
+//    - RECOMMENDED: Switch to Pooler for better performance
+//
+// 2. POOLER SESSION MODE (aws-1-xxx.pooler.supabase.com:5432)
+//    - Limited to 1-2 connections
+//    - Automatically converted to Transaction mode (port 6543)
+//
+// 3. POOLER TRANSACTION MODE (aws-1-xxx.pooler.supabase.com:6543?pgbouncer=true)
+//    - Allows 3-5+ connections
+//    - Best for production applications
+//    - Automatically configured when using pooler with port 5432
+//
+// If you're getting "max clients reached" errors:
+// - Direct connections: Already optimized (max=2)
+// - Pooler Session mode: Automatically switched to Transaction mode
+// - Can override with DB_MAX_CONNECTIONS environment variable
+// - Ensure connections are properly released (the postgres package handles this automatically)
+//
+// After connection string processing, determine max connections
+// Transaction mode (port 6543) can handle more connections than Session mode
+// We'll set this after we know the final connection string
+let maxConnections;
+const idleTimeout = parseInt(process.env.DB_IDLE_TIMEOUT || '10', 10); // seconds
+
+// Validate connection string
+if (!connectionString) {
+  console.error('❌ DATABASE_URL is not set in environment variables!');
+  throw new Error('DATABASE_URL environment variable is required');
+}
+
+// For pooler connections, use longer timeout (60s), otherwise 30s
+const defaultConnectTimeout = connectionString.includes('.pooler.supabase.com') ? 60 : 30;
+const connectTimeout = parseInt(process.env.DB_CONNECT_TIMEOUT || String(defaultConnectTimeout), 10);
+
+// Log connection string info (without exposing sensitive data)
+const connectionInfo = connectionString.match(/postgres(ql)?:\/\/([^:]+):([^@]+)@([^\/]+)\/(.+)/);
+if (connectionInfo) {
+  const [, , user, , host, database] = connectionInfo;
+  console.log(`📊 Database connection: ${user}@${host}/${database}`);
+} else {
+  console.warn('⚠️  Could not parse DATABASE_URL format');
+}
+
+// Check if using Supabase (pooler or direct connection)
+let finalConnectionString = connectionString;
+const isPooler = connectionString.includes('.pooler.supabase.com');
+const isDirectSupabase = (connectionString.includes('supabase.com') || connectionString.includes('supabase.co')) && !isPooler;
+
+if (isPooler) {
+  // POOLER CONNECTION - Can use Transaction mode (port 6543)
+  // Detect which port is being used
+  const portMatch = connectionString.match(/:(\d+)\//);
+  const port = portMatch ? portMatch[1] : null;
+  
+  if (port === '5432') {
+    // Port 5432 = Session mode (VERY LIMITED - only 1-2 connections typically)
+    // Automatically convert to Transaction mode (port 6543) for better connection pooling
+    console.log('⚠️  Detected Pooler Session mode (port 5432) - automatically switching to Transaction mode (port 6543)');
+    console.log('   This prevents "max clients reached" errors');
+    
+    // Replace port 5432 with 6543
+    finalConnectionString = connectionString.replace(':5432/', ':6543/');
+    
+    // Add pgbouncer=true parameter for transaction mode
+    const separator = finalConnectionString.includes('?') ? '&' : '?';
+    finalConnectionString = `${finalConnectionString}${separator}pgbouncer=true`;
+    
+    console.log('✅ Switched to Pooler Transaction mode with pgbouncer=true');
+  } else if (port === '6543') {
+    // Port 6543 = Transaction mode (better for connection pooling)
+    console.log('ℹ️  Using Supabase pooler in Transaction mode (port 6543)');
+    // Add pgbouncer parameter for transaction mode
+    if (!finalConnectionString.includes('pgbouncer=true')) {
+      const separator = finalConnectionString.includes('?') ? '&' : '?';
+      finalConnectionString = `${finalConnectionString}${separator}pgbouncer=true`;
+      console.log('   Added pgbouncer=true parameter');
+    }
+  } else {
+    // No port specified or different port
+    console.log(`ℹ️  Using Supabase pooler (port: ${port || 'default'})`);
+    // For transaction mode, ensure pgbouncer=true is set
+    if (!finalConnectionString.includes('pgbouncer=true') && port !== '5432') {
+      const separator = finalConnectionString.includes('?') ? '&' : '?';
+      finalConnectionString = `${finalConnectionString}${separator}pgbouncer=true`;
+      console.log('   Added pgbouncer=true parameter');
+    }
+  }
+} else if (isDirectSupabase) {
+  // DIRECT CONNECTION - Limited to 1-4 connections (no pgbouncer support)
+  const portMatch = connectionString.match(/:(\d+)\//);
+  const port = portMatch ? portMatch[1] : '5432';
+  
+  console.log('ℹ️  Using Supabase DIRECT connection (port ' + port + ')');
+  console.log('⚠️  Direct connections are LIMITED (typically 1-4 max connections)');
+  console.log('   Connection pool will be set to 2 to prevent "max clients reached" errors');
+  console.log('💡 RECOMMENDED: Switch to Pooler connection for better performance:');
+  console.log('   1. Go to Supabase Dashboard > Settings > Database');
+  console.log('   2. Copy the "Connection Pooling" connection string');
+  console.log('   3. Update DATABASE_URL in your .env file');
+  console.log('   4. The pooler URL should contain ".pooler.supabase.com"');
+  
+  // Direct connections cannot use pgbouncer, so we keep the connection string as-is
+  // But we'll set a very conservative connection pool limit
+}
+
+// Set max connections based on connection type
+// - Direct Supabase: 1-2 connections (very limited)
+// - Pooler Session mode (5432): 1-2 connections (very limited)
+// - Pooler Transaction mode (6543): 3-5 connections (better)
+if (!maxConnections) {
+  if (isDirectSupabase) {
+    // Direct connections are very limited (typically 1-4, but we use 2 to be safe)
+    maxConnections = 2;
+  } else {
+    // Pooler connection
+    const finalPortMatch = finalConnectionString.match(/:(\d+)\//);
+    const finalPort = finalPortMatch ? finalPortMatch[1] : null;
+    
+    if (finalPort === '5432') {
+      maxConnections = 2; // Pooler Session mode: very limited (1-2 connections)
+    } else {
+      maxConnections = 3; // Pooler Transaction mode: more flexible (3-5 connections)
+    }
+  }
+  
+  // Allow override via environment variable
+  maxConnections = parseInt(process.env.DB_MAX_CONNECTIONS || String(maxConnections), 10);
+}
+
+console.log(`📊 Connection pool: max=${maxConnections}, idle_timeout=${idleTimeout}s, connect_timeout=${connectTimeout}s`);
+
+// SSL configuration for Supabase
+// - Pooler connections: need flexible SSL (rejectUnauthorized: false)
+// - Direct connections: can use strict SSL (require)
+const sslConfig = isPooler
+  ? { rejectUnauthorized: false } // Pooler requires this for proper SSL handshake
+  : 'require'; // Direct connections can use strict SSL
+
+const sql = postgres(finalConnectionString, {
   debug: shouldLogQueries ? (conn, query, params) => {
     console.log('📦 Executing query:', query, params);
   } : false,
-  ssl: 'require', // Optional, useful if you're using Supabase
+  ssl: sslConfig, // SSL configuration (flexible for pooler, strict for direct)
+  max: maxConnections, // Maximum number of connections in the pool
+  idle_timeout: idleTimeout, // Close idle connections after this many seconds
+  connect_timeout: connectTimeout, // Connection timeout in seconds (increased)
+  max_lifetime: 60 * 30, // Close connections after 30 minutes (prevents stale connections)
+  prepare: false, // Disable prepared statements for better connection pool compatibility (required for pooler)
+  transform: {
+    undefined: null, // Transform undefined to null for PostgreSQL compatibility
+  },
+  connection: {
+    application_name: 'e-learning-backend', // Identify connections in database
+  },
+  // Handle connection errors gracefully
+  onnotice: () => {}, // Suppress notices
+  // Error handler for connection pool exhaustion
+  onparameter: () => {}, // Suppress parameter notices
 });
+
+// ==============================================
+// CONNECTION POOL HEALTH CHECK
+// ==============================================
+
+/**
+ * Check database connection health
+ * @returns {Promise<boolean>} - True if connection is healthy
+ */
+export const checkConnectionHealth = async () => {
+  try {
+    const startTime = Date.now();
+    await sql`SELECT 1`;
+    const duration = Date.now() - startTime;
+    console.log(`✅ Connection test successful (${duration}ms)`);
+    return true;
+  } catch (error) {
+    console.error('❌ Database connection health check failed:', error.message);
+    if (error.message?.includes('CONNECT_TIMEOUT')) {
+      console.error('   This usually means:');
+      console.error('   - Network connectivity issues');
+      console.error('   - Firewall blocking the connection');
+      console.error('   - Incorrect DATABASE_URL format');
+      console.error('   - Supabase pooler might be temporarily unavailable');
+      console.error('\n   Try:');
+      console.error('   1. Verify your DATABASE_URL in .env file');
+      console.error('   2. Check if you can reach the Supabase dashboard');
+      console.error('   3. Try using the direct connection string (not pooler)');
+      console.error('   4. Increase DB_CONNECT_TIMEOUT environment variable');
+    }
+    return false;
+  }
+};
+
+/**
+ * Gracefully handle connection pool errors
+ * @param {Error} error - Database error
+ * @returns {Object} - Formatted error response
+ */
+export const handleConnectionError = (error) => {
+  if (error.code === 'CONNECT_TIMEOUT' || error.message?.includes('CONNECT_TIMEOUT')) {
+    return {
+      error: 'Database connection timeout',
+      message: 'Unable to connect to database. Please check your DATABASE_URL and network connection.',
+      retryable: true,
+      code: 'CONNECT_TIMEOUT'
+    };
+  }
+  
+  if (error.message?.includes('max clients reached') || error.message?.includes('MaxClientsInSessionMode')) {
+    return {
+      error: 'Database connection pool exhausted',
+      message: 'Too many concurrent connections. Please try again in a moment.',
+      retryable: true,
+      code: 'POOL_EXHAUSTED'
+    };
+  }
+  
+  return {
+    error: 'Database error',
+    message: error.message || 'An unexpected database error occurred',
+    retryable: false,
+    code: error.code || 'UNKNOWN'
+  };
+};
+
+/**
+ * Retry a database query with exponential backoff
+ * @param {Function} queryFn - Async function that returns a query result
+ * @param {number} maxRetries - Maximum number of retries (default: 3)
+ * @param {number} delayMs - Initial delay in milliseconds (default: 1000)
+ * @returns {Promise} - Query result
+ */
+export const retryQuery = async (queryFn, maxRetries = 3, delayMs = 1000) => {
+  let lastError;
+  
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await queryFn();
+    } catch (error) {
+      lastError = error;
+      
+      // Only retry on connection errors
+      const isRetryable = error.code === 'CONNECT_TIMEOUT' || 
+                         error.message?.includes('CONNECT_TIMEOUT') ||
+                         error.message?.includes('max clients reached') ||
+                         error.message?.includes('Connection terminated');
+      
+      if (!isRetryable || attempt === maxRetries - 1) {
+        throw error;
+      }
+      
+      // Exponential backoff: 1s, 2s, 4s
+      const delay = delayMs * Math.pow(2, attempt);
+      console.warn(`⚠️  Database query failed (attempt ${attempt + 1}/${maxRetries}), retrying in ${delay}ms...`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+  
+  throw lastError;
+};
 
 // ==============================================
 // TIMEZONE UTILITY FUNCTIONS FOR CAT (UTC+2)

@@ -30,11 +30,16 @@ export async function getAllLessons({ project_id = null } = {}) {
   const lessons = await sql`
     SELECT
       l.*,
+      COALESCE(w.title, w2.title) AS week_title,
+      COALESCE(w.order_num, w2.order_num) AS week_order,
       COALESCE(file_data.files, '[]'::json) AS files_json,
       file_data.file_url AS primary_file_url,
       file_data.image_url AS primary_image_url,
       file_data.video_url AS primary_video_url
     FROM lessons l
+    LEFT JOIN projects p ON l.project_id = p.project_id
+    LEFT JOIN weeks w ON l.week_id = w.week_id
+    LEFT JOIN weeks w2 ON p.week_id = w2.week_id
     LEFT JOIN LATERAL (
       SELECT
         json_agg(
@@ -90,13 +95,13 @@ export async function getAllLessons({ project_id = null } = {}) {
 // Get lesson by id (include sublessons)
 export async function getLessonById(lesson_id) {
   const [lesson] = await sql`
-    SELECT * FROM lessons WHERE lesson_id = ${lesson_id}
+    SELECT * FROM lessons WHERE lesson_id = ${lesson_id}::int
   `;
   if (!lesson) return null;
   
   lesson.sublessons = await sql`
     SELECT * FROM lessons
-    WHERE parent_lesson_id = ${lesson_id}
+    WHERE parent_lesson_id = ${lesson_id}::int
     ORDER BY order_num ASC, created_at ASC
   `;
   return lesson;
@@ -116,7 +121,7 @@ export async function updateLesson(lesson_id, {
       order_num = COALESCE(${order_num}, order_num),
       week_id = COALESCE(${week_id}, week_id),
       updated_at = CURRENT_TIMESTAMP
-    WHERE lesson_id = ${lesson_id}
+    WHERE lesson_id = ${lesson_id}::int
     RETURNING *
   `;
   return lesson;
@@ -146,7 +151,7 @@ export async function deleteLesson(lesson_id) {
       const assignments = await trx`
         SELECT assignment_id
         FROM assignments
-        WHERE lesson_id = ANY(${trx.array(ids)})
+        WHERE lesson_id = ANY(${trx.array(ids)}::int[])
       `;
 
       const assignmentIds = assignments.map(a => a.assignment_id);
@@ -157,26 +162,26 @@ export async function deleteLesson(lesson_id) {
         // 1) Assignment comments
         await trx`
           DELETE FROM assignment_comments
-          WHERE assignment_id = ANY(${trx.array(assignmentIds)})
+          WHERE assignment_id = ANY(${trx.array(assignmentIds)}::int[])
         `;
 
         // 2) Assignment downloads
         await trx`
           DELETE FROM assignment_downloads
-          WHERE assignment_id = ANY(${trx.array(assignmentIds)})
+          WHERE assignment_id = ANY(${trx.array(assignmentIds)}::int[])
         `;
 
         // 3) Assignment files
         await trx`
           DELETE FROM assignment_files
-          WHERE assignment_id = ANY(${trx.array(assignmentIds)})
+          WHERE assignment_id = ANY(${trx.array(assignmentIds)}::int[])
         `;
 
         // 4) Assignment submissions and their files
         const submissions = await trx`
           SELECT submission_id
           FROM assignment_submissions
-          WHERE assignment_id = ANY(${trx.array(assignmentIds)})
+          WHERE assignment_id = ANY(${trx.array(assignmentIds)}::int[])
         `;
 
         const submissionIds = submissions.map(s => s.submission_id);
@@ -184,45 +189,45 @@ export async function deleteLesson(lesson_id) {
         if (submissionIds.length > 0) {
           await trx`
             DELETE FROM assignment_submission_files
-            WHERE submission_id = ANY(${trx.array(submissionIds)})
+            WHERE submission_id = ANY(${trx.array(submissionIds)}::int[])
           `;
         }
 
         await trx`
           DELETE FROM assignment_submissions
-          WHERE assignment_id = ANY(${trx.array(assignmentIds)})
+          WHERE assignment_id = ANY(${trx.array(assignmentIds)}::int[])
         `;
 
         // Finally delete assignments themselves
         await trx`
           DELETE FROM assignments
-          WHERE assignment_id = ANY(${trx.array(assignmentIds)})
+          WHERE assignment_id = ANY(${trx.array(assignmentIds)}::int[])
         `;
       }
 
       // Remove lesson_files linked to these lessons
       await trx`
         DELETE FROM lesson_files
-        WHERE lesson_id = ANY(${trx.array(ids)})
+        WHERE lesson_id = ANY(${trx.array(ids)}::int[])
       `;
 
       // Remove progress entries linked to these lessons
       await trx`
         DELETE FROM progress
-        WHERE lesson_id = ANY(${trx.array(ids)})
+        WHERE lesson_id = ANY(${trx.array(ids)}::int[])
       `;
 
       // Detach quizzes that are linked to these lessons (set lesson_id to NULL)
       await trx`
         UPDATE quizzes
         SET lesson_id = NULL
-        WHERE lesson_id = ANY(${trx.array(ids)})
+        WHERE lesson_id = ANY(${trx.array(ids)}::int[])
       `;
 
       // Delete all lessons collected in the tree (children and main lesson)
       await trx`
         DELETE FROM lessons
-        WHERE lesson_id = ANY(${trx.array(ids)})
+        WHERE lesson_id = ANY(${trx.array(ids)}::int[])
       `;
     }
 

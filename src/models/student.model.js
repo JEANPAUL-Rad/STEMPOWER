@@ -2631,6 +2631,57 @@ export async function getSubmissionById(submissionId) {
     }
 }
 
+export async function getSubmissionFiles(submissionId) {
+    try {
+        const files = await sql`
+            SELECT 
+                f.file_id,
+                f.submission_id,
+                f.file_name,
+                f.file_url,
+                f.file_size_bytes,
+                f.uploaded_at,
+                f.uploaded_by,
+                u.name AS uploaded_by_name,
+                u.role AS uploaded_by_role
+            FROM assignment_submission_files f
+            LEFT JOIN users u ON u.user_id = f.uploaded_by
+            WHERE f.submission_id = ${submissionId}
+            ORDER BY f.uploaded_at ASC
+        `;
+        
+        return files.map(file => ({
+            id: file.file_id,
+            name: file.file_name,
+            url: file.file_url,
+            size: file.file_size_bytes,
+            uploadedAt: file.uploaded_at,
+            uploadedBy: file.uploaded_by,
+            uploadedByName: file.uploaded_by_name || null,
+            uploadedByRole: file.uploaded_by_role || null
+        }));
+    } catch (error) {
+        console.error('Error getting submission files:', error);
+        throw error; // Re-throw to be handled by the controller
+    }
+}
+
+// Utility: get submission_id owning a given submission file id
+export async function getSubmissionIdByFileId(fileId) {
+    try {
+        const result = await sql`
+            SELECT submission_id 
+            FROM assignment_submission_files 
+            WHERE file_id = ${fileId}
+        `;
+        if (result.length === 0) return null;
+        return result[0].submission_id;
+    } catch (error) {
+        console.error('Error in getSubmissionIdByFileId:', error);
+        throw error;
+    }
+}
+
 export async function getSubmissionsByUser(userId) {
     try {
         let modules;

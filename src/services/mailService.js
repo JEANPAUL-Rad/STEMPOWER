@@ -73,3 +73,15 @@ export const sendPaymentStatusEmail = async ({ email, name, status, amount, refe
 	`;
 	await sendMail(email, subject, html);
 };
+
+// Send a temporary password for Protoforial forgot-password
+export const sendTemporaryPasswordEmail = async ({ email, name, tempPassword }) => {
+  const html = `
+    <h2>Temporary Password</h2>
+    <p>Hello ${name || ''},</p>
+    <p>We generated a temporary password for your MEP Designer Chamber account:</p>
+    <p><strong style="font-size: 18px;">${tempPassword}</strong></p>
+    <p>Please sign in using this password and then change it from your profile settings.</p>
+  `;
+  await sendMail(email, 'Your Temporary Chamber Password', html);
+};

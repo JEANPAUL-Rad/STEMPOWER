@@ -1,22 +1,43 @@
 
-import sql from '../config/db.js';
+import sql, { retryQuery, handleConnectionError } from '../config/db.js';
 import bcrypt from 'bcrypt';
 
 export const createUser = async ({ name, email, password, role = 'student' }) => {
-  const password_hash = await bcrypt.hash(password, 10);
-  const [user] = await sql`
-    INSERT INTO users (name, email, password_hash, role, created_at, updated_at)
-    VALUES (${name}, ${email}, ${password_hash}, ${role}, NOW(), NOW())
-    RETURNING user_id, name, email, role
-  `;
-  return user;
+  try {
+    const password_hash = await bcrypt.hash(password, 10);
+    const [user] = await retryQuery(async () => {
+      return await sql`
+        INSERT INTO users (name, email, password_hash, role, created_at, updated_at)
+        VALUES (${name}, ${email}, ${password_hash}, ${role}, NOW(), NOW())
+        RETURNING user_id, name, email, role
+      `;
+    });
+    return user;
+  } catch (error) {
+    const handledError = handleConnectionError(error);
+    console.error('❌ Error creating user:', handledError.message);
+    throw error;
+  }
 };
 
 export const findUserByEmail = async (email) => {
-  const [user] = await sql`
-    SELECT * FROM users WHERE email = ${email}
-  `;
-  return user;
+  try {
+    const [user] = await retryQuery(async () => {
+      return await sql`
+        SELECT * FROM users WHERE email = ${email}
+      `;
+    });
+    return user;
+  } catch (error) {
+    const handledError = handleConnectionError(error);
+    console.error('❌ Error finding user by email:', handledError.message);
+    // Don't throw for connection errors - return null instead to prevent cascading failures
+    if (handledError.code === 'CONNECT_TIMEOUT' || handledError.code === 'POOL_EXHAUSTED') {
+      console.warn('⚠️  Database connection issue, returning null for user lookup');
+      return null;
+    }
+    throw error;
+  }
 };
 
 export const confirmUser = async (email) => {

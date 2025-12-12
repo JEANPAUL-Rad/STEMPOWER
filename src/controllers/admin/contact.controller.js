@@ -3,19 +3,27 @@ import * as ContactModel from '../../models/admin/contact.model.js';
 
 export const createContactMessage = async (req, res) => {
   try {
-    const { name, email, service, message } = req.body;
+    const { name, email, phone, service, message } = req.body;
     
     // Validate required fields
-    if (!name || !email || !service || !message) {
+    if (!name || !email || !service || !message || !phone) {
       return res.status(400).json({ 
         success: false, 
-        message: 'All fields (name, email, service, message) are required' 
+        message: 'All fields (name, email, phone, service, message) are required' 
+      });
+    }
+    const digits = String(phone).replace(/\D/g, '');
+    if (digits.length !== 10) {
+      return res.status(400).json({
+        success: false,
+        message: 'Phone must be exactly 10 digits'
       });
     }
     
     const newMessage = await ContactModel.createContactMessage({ 
       name, 
       email, 
+      phone: digits, 
       service, 
       message 
     });
@@ -95,7 +103,7 @@ export const getContactMessageById = async (req, res) => {
 export const updateContactMessage = async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, email, service, message } = req.body;
+    const { name, email, phone, service, message } = req.body;
     
     // Validate ID
     if (!id || isNaN(parseInt(id))) {
@@ -106,16 +114,24 @@ export const updateContactMessage = async (req, res) => {
     }
     
     // Validate required fields
-    if (!name || !email || !service || !message) {
+    if (!name || !email || !service || !message || !phone) {
       return res.status(400).json({ 
         success: false, 
-        message: 'All fields (name, email, service, message) are required' 
+        message: 'All fields (name, email, phone, service, message) are required' 
+      });
+    }
+    const digits = String(phone).replace(/\D/g, '');
+    if (digits.length !== 10) {
+      return res.status(400).json({
+        success: false,
+        message: 'Phone must be exactly 10 digits'
       });
     }
     
     const updated = await ContactModel.updateContactMessage(parseInt(id), {
       name,
       email,
+      phone: digits,
       service,
       message
     });

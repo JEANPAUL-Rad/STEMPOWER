@@ -7,6 +7,7 @@ import express from 'express';
 import session from 'express-session';
 import fs from 'fs';
 import path from 'path';
+import { streamOrRedirect } from './utils/fileDelivery.js';
 
 // Load environment variables
 dotenv.config();
@@ -29,7 +30,25 @@ app.use(session({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(express.text({ type: ['text/plain', 'text/*'] }));
-app.use(cors());
+const allowedOrigins = new Set([
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  process.env.FRONTEND_URL,
+].filter(Boolean));
+
+const corsOptions = {
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.has(origin)) {
+      return callback(null, true);
+    }
+    return callback(null, false);
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+};
+
+app.use(cors(corsOptions));
 app.use((req, res, next) => {
   res.set('Cache-Control', 'no-store');
   next();
@@ -45,52 +64,11 @@ app.use('/uploads/quiz-submissions', express.static(path.join(__dirname, 'upload
 app.use('/uploads/assignments', express.static(path.join(__dirname, 'uploads/assignments')));
 app.use('/uploads/assignment-submissions', express.static(path.join(__dirname, 'uploads/assignment-submissions')));
 
-const isRemoteUrl = (url = '') => /^https?:\/\//i.test(url);
-
-const resolveLocalDownloadPath = (fileUrl = '') => {
-  if (!fileUrl) return null;
-
-  if (path.isAbsolute(fileUrl) && fs.existsSync(fileUrl)) {
-    return fileUrl;
-  }
-
-  const cleaned = fileUrl.replace(/^[./\\]+/, '');
-  const directPath = path.join(process.cwd(), cleaned);
-  if (fs.existsSync(directPath)) {
-    return directPath;
-  }
-
-  const uploadsPath = path.join(process.cwd(), 'uploads', cleaned);
-  if (fs.existsSync(uploadsPath)) {
-    return uploadsPath;
-  }
-
-  return null;
-};
-
-const streamOrRedirect = (res, fileUrl, downloadName, notFoundMessage = 'File not found on server.') => {
-  if (isRemoteUrl(fileUrl)) {
-    return res.redirect(fileUrl);
-  }
-
-  const filePath = resolveLocalDownloadPath(fileUrl);
-  if (!filePath) {
-    return res.status(404).json({ message: notFoundMessage });
-  }
-
-  res.download(filePath, downloadName || path.basename(filePath), (err) => {
-    if (err && !res.headersSent) {
-      if (err.code === 'ENOENT') {
-        res.status(404).json({ message: notFoundMessage });
-      } else {
-        res.status(500).json({ message: 'Error downloading file.' });
-      }
-    }
-  });
-};
-
 // Import routes
+import * as AssignmentModel from './models/admin/assignment.model.js';
+import * as AssignmentFileModel from './models/admin/assignment_file.model.js';
 import * as QuizQuestionModel from './models/admin/quiz_question.model.js';
+import * as StudentModel from './models/student.model.js';
 import adminRoutes from './routes/admin.routes.js';
 import adminAssignmentRoutes from './routes/admin/assignment.routes.js';
 import contactRoutes from './routes/admin/contact.routes.js';
@@ -104,13 +82,10 @@ import adminQuizSubmissionRoutes from './routes/admin/quiz_submission.routes.js'
 import adminResourceRoutes from './routes/admin/resource.routes.js';
 import submissionAnswerRoutes from './routes/admin/submission_answer.routes.js';
 import adminWeekRoutes from './routes/admin/week.routes.js';
+import protoforialRoutes from './routes/protoforial.routes.js';
 import registerRoutes from './routes/register.routes.js';
 import studentRoutes from './routes/student.routes.js';
 import userRoutes from './routes/user.routes.js';
-import protoforialRoutes from './routes/protoforial.routes.js';
-import * as AssignmentModel from './models/admin/assignment.model.js';
-import * as AssignmentFileModel from './models/admin/assignment_file.model.js';
-import * as StudentModel from './models/student.model.js';
 
 // Download routes
 app.get('/api/download/question-file/:quizId/:questionId', async (req, res) => {
@@ -201,6 +176,36 @@ app.get('/api/download/submission/:submission_id', async (req, res) => {
   }
 });
 
+// Public generic proxy download for allowed remote/local files (e.g., Cloudinary PDFs)
+app.get('/api/download', async (req, res) => {
+  try {
+    const { url, name, disposition } = req.query;
+    if (!url) return res.status(400).json({ message: 'url query is required' });
+    const decoded = decodeURIComponent(url);
+    // Allow only Cloudinary or local uploads
+    try {
+      const u = new URL(decoded, 'http://dummy.base');
+      const host = u.host;
+      const isCloudinary = /(^|\.)res\.cloudinary\.com$/i.test(host);
+      const isUploads = decoded.startsWith('/uploads/') || decoded.includes('/uploads/');
+      if (!isCloudinary && !isUploads) {
+        return res.status(400).json({ message: 'URL not allowed' });
+      }
+    } catch {
+      // If relative path (e.g., /uploads/...), allow
+      if (!(decoded.startsWith('/uploads/'))) {
+        return res.status(400).json({ message: 'Invalid url' });
+      }
+    }
+    const forceAttachment = disposition === 'attachment';
+    const forceInline = disposition === 'inline';
+    return streamOrRedirect(res, decoded, name || undefined, 'File not found', { forceAttachment, forceInline });
+  } catch (error) {
+    console.error('Public proxy download error:', error);
+    res.status(500).json({ message: 'Internal server error during download.' });
+  }
+});
+
 // Mount routes
 app.use('/api/v1/users', userRoutes);
 app.use('/api/v1/register', registerRoutes);
@@ -218,6 +223,8 @@ app.use('/api/v1/admin', adminResourceRoutes);
 app.use('/api/v1/admin', submissionAnswerRoutes);
 app.use('/api/v1/admin', adminLiveSessionRoutes);
 app.use('/api/v1/admin/contacts', contactRoutes);
+// Public contacts endpoint (same controller) to ensure availability outside admin namespace
+app.use('/api/contacts', contactRoutes);
 app.use('/api/v1/admin', adminAssignmentRoutes);
 
 // Fallback route

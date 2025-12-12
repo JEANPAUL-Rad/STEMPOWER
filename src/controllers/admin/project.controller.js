@@ -115,9 +115,21 @@ export async function getProjectById(req, res) {
 // Delete a project
 export async function deleteProject(req, res) {
   try {
-    await ProjectModel.deleteProject(req.params.project_id);
+    const projectId = Number(req.params.project_id);
+    if (!Number.isInteger(projectId)) {
+      return res.status(400).json({ message: 'Invalid project ID' });
+    }
+
+    await ProjectModel.deleteProject(projectId);
     res.json({ message: 'Project deleted' });
   } catch (err) {
+    // Handle FK violation (lessons referencing this project)
+    if (err && err.code === '23503') {
+      return res.status(409).json({
+        message: 'Cannot delete project while lessons are linked to it. Move or delete the lessons first.',
+        detail: err.detail
+      });
+    }
     res.status(500).json({ message: err.message });
   }
 }

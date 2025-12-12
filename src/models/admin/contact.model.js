@@ -2,11 +2,28 @@
 import sql from '../../config/db.js';
 import { createDBTimestamp, parseDBTimestamp } from '../../config/db.js';
 
-export const createContactMessage = async ({ name, email, service, message }) => {
+async function ensureContactSchema() {
   try {
+    const colCheck = await sql`
+      SELECT column_name
+      FROM information_schema.columns
+      WHERE table_name = 'contact_messages'
+        AND column_name = 'phone'
+    `;
+    if (colCheck.length === 0) {
+      await sql`ALTER TABLE contact_messages ADD COLUMN IF NOT EXISTS phone character varying(20)`;
+    }
+  } catch (e) {
+    console.warn('⚠️  Contact schema ensure failed:', e.message);
+  }
+}
+
+export const createContactMessage = async ({ name, email, service, message, phone }) => {
+  try {
+    await ensureContactSchema();
     const result = await sql`
-      INSERT INTO contact_messages (name, email, service, message, created_at) 
-      VALUES (${name}, ${email}, ${service}, ${message}, ${createDBTimestamp()}) 
+      INSERT INTO contact_messages (name, email, phone, service, message, created_at) 
+      VALUES (${name}, ${email}, ${phone}, ${service}, ${message}, ${createDBTimestamp()}) 
       RETURNING *
     `;
     
@@ -60,12 +77,14 @@ export const getContactMessageById = async (id) => {
   }
 };
 
-export const updateContactMessage = async (id, { name, email, service, message }) => {
+export const updateContactMessage = async (id, { name, email, phone, service, message }) => {
   try {
+    await ensureContactSchema();
     const result = await sql`
       UPDATE contact_messages 
       SET name = ${name}, 
           email = ${email}, 
+          phone = ${phone},
           service = ${service}, 
           message = ${message},
           updated_at = ${createDBTimestamp()}
