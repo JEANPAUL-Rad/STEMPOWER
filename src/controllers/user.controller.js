@@ -1,12 +1,15 @@
-import jwt from 'jsonwebtoken';
 import bcrypt from 'bcrypt';
+import jwt from 'jsonwebtoken';
 import sql from '../config/db.js';
-import { 
-  createUser, findUserByEmail, confirmUser, 
-  setPasswordResetToken, findUserByResetToken, updateUserPassword 
+import { createEnrollment } from '../models/enrollment.model.js';
+import {
+    confirmUser,
+    createUser, findUserByEmail,
+    findUserByResetToken,
+    setPasswordResetToken,
+    updateUserPassword
 } from '../models/user.model.js';
 import { sendConfirmEmail, sendResetPasswordEmail, sendTemporaryPasswordEmail } from '../services/mailService.js';
-import { createEnrollment } from '../models/enrollment.model.js';
 
 // Register: Set status to 'pending' and send confirmation email
 const register = async (req, res) => {
@@ -341,9 +344,9 @@ const login = async (req, res) => {
   }
 
   const token = jwt.sign(
-    { user_id: user.user_id, role: user.role },
+    { user_id: user.user_id, role: user.role, email: user.email },
     process.env.JWT_SECRET,
-    { expiresIn: '7d' }
+    { expiresIn: '365d' }
   );
 
   // Set session data
