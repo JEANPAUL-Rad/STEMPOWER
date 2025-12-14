@@ -3,11 +3,11 @@ import jwt from 'jsonwebtoken';
 import sql from '../config/db.js';
 import { createEnrollment } from '../models/enrollment.model.js';
 import {
-    confirmUser,
-    createUser, findUserByEmail,
-    findUserByResetToken,
-    setPasswordResetToken,
-    updateUserPassword
+  confirmUser,
+  createUser, findUserByEmail,
+  findUserByResetToken,
+  setPasswordResetToken,
+  updateUserPassword
 } from '../models/user.model.js';
 import { sendConfirmEmail, sendResetPasswordEmail, sendTemporaryPasswordEmail } from '../services/mailService.js';
 
@@ -416,22 +416,19 @@ const forgotPassword = async (req, res) => {
     }
 
     if (preferTemp) {
-      // Generate a temporary password and set it immediately
+      // Generate a temporary password and send email first
       const tempPassword = Math.random().toString(36).slice(-10);
-      const hash = await bcrypt.hash(tempPassword, 10);
-      await updateUserPassword(user.user_id, hash);
-      // Clear any existing reset tokens
-      await setPasswordResetToken(user.user_id, null, null);
-      // Email temporary password to the user
       try {
         await sendTemporaryPasswordEmail({ email: user.email, name: user.name, tempPassword });
       } catch (mailErr) {
         console.error('Failed to send temporary password email:', mailErr.message);
+        return res.status(500).json({ message: 'Email delivery failed. Please try again later or contact support.' });
       }
-      // Do not return the temp password in the response
-      return res.json({
-        message: 'Temporary password sent to your email. Use it to login, then change your password.'
-      });
+      // Email sent; now set the temp password
+      const hash = await bcrypt.hash(tempPassword, 10);
+      await updateUserPassword(user.user_id, hash);
+      await setPasswordResetToken(user.user_id, null, null);
+      return res.json({ message: 'Temporary password sent to your email. Use it to login, then change your password.' });
     }
 
     // Default: generate reset link via token
@@ -447,14 +444,21 @@ const forgotPassword = async (req, res) => {
     const FRONTEND_URL = process.env.FRONTEND_URL || process.env.CLIENT_URL || 'http://localhost:5173';
     reset_url = `${FRONTEND_URL.replace(/\/$/, '')}/reset-password?token=${encodeURIComponent(resetToken)}`;
     
-    sendResetPasswordEmail(user.email, user.name, resetToken).catch(err => {
+    try {
+      await sendResetPasswordEmail(user.email, user.name, resetToken);
+      const shouldIncludeUrl = process.env.SHOW_RESET_LINK_INLINE === 'true' || process.env.NODE_ENV !== 'production';
+      return res.json({ 
+        message: 'If an account exists with that email, a reset link has been sent.',
+        ...(shouldIncludeUrl && reset_url ? { reset_url } : {})
+      });
+    } catch (err) {
       console.error('Failed to send reset password email:', err.message);
-    });
-    const shouldIncludeUrl = process.env.SHOW_RESET_LINK_INLINE === 'true' || process.env.NODE_ENV !== 'production';
-    return res.json({ 
-      message: "If an account exists with that email, a reset link has been sent.",
-      ...(shouldIncludeUrl && reset_url ? { reset_url } : {})
-    });
+      // Provide the reset URL inline so user can proceed even if email fails
+      return res.json({ 
+        message: 'Reset email could not be delivered. Use the link below to reset your password.',
+        reset_url
+      });
+    }
   } catch (err) {
     console.error('forgotPassword error:', err);
     return res.status(500).json({ message: 'Failed to process password reset' });

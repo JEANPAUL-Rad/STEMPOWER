@@ -1,7 +1,7 @@
-import * as Proto from '../models/protoforial.model.js';
-import { sendPaymentInstructionsEmail, sendTemporaryPasswordEmail } from '../services/mailService.js';
 import fs from 'fs';
 import path from 'path';
+import * as Proto from '../models/protoforial.model.js';
+import { sendPaymentInstructionsEmail, sendTemporaryPasswordEmail } from '../services/mailService.js';
 
 function ensureDir(dir) {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -372,25 +372,29 @@ export async function forgotPassword(req, res) {
         if (!email) {
             return res.status(400).json({ success: false, message: 'Email is required' });
         }
+        // Generate temporary password
         const tempPassword = Math.random().toString(36).slice(-10);
+
+        // Fetch name for nicer email
+        let name = '';
+        try {
+          const acc = await Proto.getProtoforialByEmail(email);
+          name = acc?.full_name || '';
+        } catch { /* ignore */ }
+
+        // Try sending email first; if sending fails, do NOT change password to avoid locking the user out
+        try {
+          await sendTemporaryPasswordEmail({ email, name, tempPassword });
+        } catch (mailErr) {
+          console.error('Failed to send temporary password email:', mailErr.message);
+          return res.status(500).json({ success: false, message: 'Email delivery failed. Please contact support or try again later.' });
+        }
+
+        // Email sent successfully; now set the temporary password
         await Proto.resetProtoforialPassword(email, tempPassword);
-    // Try to fetch name for nicer email
-    let name = '';
-    try {
-      const acc = await Proto.getProtoforialByEmail(email);
-      name = acc?.full_name || '';
-    } catch {/* ignore */}
-    // Email the temporary password
-    try {
-      await sendTemporaryPasswordEmail({ email, name, tempPassword });
-    } catch (mailErr) {
-      // Do not fail if email sending errors; temp password is set already
-      console.error('Failed to send temporary password email:', mailErr.message);
-    }
-    res.json({ success: true, message: 'Temporary password sent to your email address' });
+        return res.json({ success: true, message: 'Temporary password sent to your email address' });
     } catch (error) {
         res.status(400).json({ success:false, message: error.message });
     }
 }
-
 

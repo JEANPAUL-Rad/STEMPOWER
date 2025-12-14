@@ -34,6 +34,8 @@ const allowedOrigins = new Set([
   'http://localhost:5173',
   'http://127.0.0.1:5173',
   process.env.FRONTEND_URL,
+  'https://neg.co.rw',
+  'http://neg.co.rw',
 ].filter(Boolean));
 
 const corsOptions = {
@@ -41,6 +43,13 @@ const corsOptions = {
     if (!origin || allowedOrigins.has(origin)) {
       return callback(null, true);
     }
+    // Allow subdomains of neg.co.rw (e.g., Northflank custom domains pointing to neg.co.rw)
+    try {
+      const url = new URL(origin);
+      if (url.hostname.endsWith('.neg.co.rw')) {
+        return callback(null, true);
+      }
+    } catch {}
     return callback(null, false);
   },
   credentials: true,
