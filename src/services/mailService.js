@@ -2,7 +2,7 @@
 import { sendMail } from '../utils/email.js';
 
 // Get frontend URL from environment variable or use localhost for development
-const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://neg.co.rw';
 
 export const sendConfirmEmail = async (email, name, token) => {
   const confirmLink = `${FRONTEND_URL}/confirm?token=${token}`;
@@ -52,10 +52,10 @@ export const sendPaymentInstructionsEmail = async ({ email, name, amount, refere
 		<p>Thank you for registering. Please complete your payment to finalize your registration.</p>
 		<ul>
 			<li><strong>Amount:</strong> ${amount} RWF</li>
-			<li><strong>Pay To:</strong> ${payToName} (${payToNumber})</li>
+			<li><strong>Pay To:</strong> ${payToName} </li>
 			
 		</ul>
-		<p>Use the phone number Press *182*1*1*0795813936#. when paying to ensure your payment is matched.</p>
+		<p>Use the phone number Press *182*8*1*7930391#.. when paying to ensure your payment is matched.</p>
 	`;
 	await sendMail(email, 'Complete Your Registration Payment', html);
 };
@@ -79,9 +79,9 @@ export const sendTemporaryPasswordEmail = async ({ email, name, tempPassword }) 
   const html = `
     <h2>Temporary Password</h2>
     <p>Hello ${name || ''},</p>
-    <p>We generated a temporary password for your MEP Designer Chamber account:</p>
+    <p>We generated a temporary password for your  account:</p>
     <p><strong style="font-size: 18px;">${tempPassword}</strong></p>
     <p>Please sign in using this password and then change it from your profile settings.</p>
   `;
-  await sendMail(email, 'Your Temporary Chamber Password', html);
+  await sendMail(email, 'Your Temporary  Password', html);
 };

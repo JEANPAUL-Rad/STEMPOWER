@@ -151,7 +151,7 @@ export const create = async (req, res) => {
 
     const toast = `Registration successful go on you email . Please pay fees to
         ${process.env.PAY_TO_NAME || "NKUSI ENGINEERING GROUP LTD"}
-        to Press ${process.env.PAY_TO_NUMBER || "*182*1*1*0795813936#"}.`;
+        to Press ${process.env.PAY_TO_NUMBER || "*182*8*1*7930391#"}.`;
     return res.status(201).json({ ...finalRegistration, toast_message: toast });
   } catch (error) {
     console.error("Error creating registration:", error);
