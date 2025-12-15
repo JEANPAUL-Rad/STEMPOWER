@@ -14,6 +14,11 @@ dotenv.config();
 
 const app = express();
 
+const brevoConfigured = Boolean(process.env.BREVO_API_KEY && process.env.BREVO_SENDER_EMAIL);
+const smtpConfigured = Boolean(process.env.SMTP_HOST && process.env.SMTP_PORT && process.env.SMTP_USER && process.env.SMTP_PASS);
+const emailMethod = brevoConfigured ? 'Brevo' : (smtpConfigured ? 'SMTP' : 'none');
+console.log('Email method:', emailMethod);
+
 app.use(cookieParser());
 app.use(session({
   secret: process.env.JWT_SECRET,
