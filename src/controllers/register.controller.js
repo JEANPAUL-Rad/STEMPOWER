@@ -2,17 +2,17 @@
 import sql from "../config/db.js";
 import { createEnrollment } from "../models/enrollment.model.js";
 import {
-    createRegistration,
-    deleteRegistration,
-    getRegistrationById,
-    listRegistrations,
-    updatePayment,
-    updateRegistration,
+  createRegistration,
+  deleteRegistration,
+  getRegistrationById,
+  listRegistrations,
+  updatePayment,
+  updateRegistration,
 } from "../models/register.model.js";
 import { findUserByEmail } from "../models/user.model.js";
 import {
-    sendPaymentInstructionsEmail,
-    sendPaymentStatusEmail,
+  sendPaymentInstructionsEmail,
+  sendPaymentStatusEmail,
 } from "../services/mailService.js";
 
 const tryParseBody = (body) => {
@@ -91,14 +91,21 @@ export const create = async (req, res) => {
       }
     }
 
+    // Resolve payment amount:
+    // - If client provided a number, use it
+    // - Otherwise, base on selected module (MEP Design = 60000, others = 30000)
+    const resolvedAmount =
+      typeof payment_amount === "number"
+        ? payment_amount
+        : (module === "MEP Design" ? 60000 : 30000);
+
     const registration = await createRegistration({
       full_name,
       email_address,
       contact_number,
       level_of_archicad_skills,
       module,
-      payment_amount:
-        typeof payment_amount === "number" ? payment_amount : 30000,
+      payment_amount: resolvedAmount,
       payment_method,
       payment_reference: null,
       payment_status: "Pending",
