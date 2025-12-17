@@ -1,7 +1,8 @@
 // services/mailService.js - Updated with dynamic frontend URL http://localhost:5173
 import { sendMail } from '../utils/email.js';
 
-const FRONTEND_URL = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/`/g, '').replace(/\/$/, '');
+// Get frontend URL from environment variable or use localhost for development
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 
 export const sendConfirmEmail = async (email, name, token) => {
   const confirmLink = `${FRONTEND_URL}/confirm?token=${token}`;
