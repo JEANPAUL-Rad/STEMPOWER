@@ -1,7 +1,7 @@
-import * as Proto from '../models/protoforial.model.js';
-import { sendPaymentInstructionsEmail, sendTemporaryPasswordEmail } from '../services/mailService.js';
 import fs from 'fs';
 import path from 'path';
+import * as Proto from '../models/protoforial.model.js';
+import { sendPaymentInstructionsEmail, sendTemporaryPasswordEmail } from '../services/mailService.js';
 
 function ensureDir(dir) {
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -368,24 +368,46 @@ export async function changePassword(req, res) {
 
 export async function forgotPassword(req, res) {
     try {
-        const { email } = req.body;
-        if (!email) {
+        let email = '';
+        if (typeof req.body === 'string') {
+            const raw = String(req.body).trim();
+            try {
+                const parsed = JSON.parse(raw);
+                email = String(parsed.email || '').trim();
+            } catch {
+                const match = raw.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+                email = match ? match[0] : raw;
+            }
+        } else {
+            email = String((req.body?.email || req.query?.email || '')).trim();
+        }
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!email || !emailRegex.test(email)) {
             return res.status(400).json({ success: false, message: 'Email is required' });
         }
         const tempPassword = Math.random().toString(36).slice(-10);
-        await Proto.resetProtoforialPassword(email, tempPassword);
     // Try to fetch name for nicer email
     let name = '';
     try {
       const acc = await Proto.getProtoforialByEmail(email);
       name = acc?.full_name || '';
     } catch {/* ignore */}
-    // Email the temporary password
+    // Email the temporary password first
     try {
       await sendTemporaryPasswordEmail({ email, name, tempPassword });
     } catch (mailErr) {
-      // Do not fail if email sending errors; temp password is set already
       console.error('Failed to send temporary password email:', mailErr.message);
+      return res.status(500).json({ success: false, message: 'Failed to send temporary password email' });
+    }
+    // Then update the password on the account
+    try {
+      await Proto.resetProtoforialPassword(email, tempPassword);
+    } catch (err) {
+      const msg = String(err?.message || '').toLowerCase();
+      if (msg.includes('not found')) {
+        return res.status(404).json({ success: false, message: 'Account not found' });
+      }
+      return res.status(500).json({ success: false, message: 'Failed to reset password' });
     }
     res.json({ success: true, message: 'Temporary password sent to your email address' });
     } catch (error) {

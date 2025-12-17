@@ -80,9 +80,9 @@ server.listen(PORT, () => {
   }).on('error', (error) => {
     if (error.code === 'EADDRINUSE') {
       console.error(`❌ Port ${PORT} is already in use!`);
-      console.error('   To fix this:');
-      console.error(`   1. Kill the process: lsof -ti:${PORT} | xargs kill -9`);
-      console.error(`   2. Or use a different port: PORT=5001 npm start`);
+      console.error('   Close the existing server using Windows commands:');
+      console.error(`   1. netstat -ano | findstr :${PORT}`);
+      console.error('   2. taskkill /PID <PID> /F');
       process.exit(1);
     } else {
       console.error('❌ Server error:', error);

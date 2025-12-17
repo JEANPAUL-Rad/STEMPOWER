@@ -3,13 +3,14 @@ import jwt from 'jsonwebtoken';
 import sql from '../config/db.js';
 import { createEnrollment } from '../models/enrollment.model.js';
 import {
-    confirmUser,
-    createUser, findUserByEmail,
-    findUserByResetToken,
-    setPasswordResetToken,
-    updateUserPassword
+  confirmUser,
+  createUser, findUserByEmail,
+  findUserByResetToken,
+  setPasswordResetToken,
+  updateUserPassword
 } from '../models/user.model.js';
 import { sendConfirmEmail, sendResetPasswordEmail, sendTemporaryPasswordEmail } from '../services/mailService.js';
+import { sendMail } from '../utils/email.js';
 
 // Register: Set status to 'pending' and send confirmation email
 const register = async (req, res) => {
@@ -406,9 +407,26 @@ const checkSession = (req, res) => {
 
 // Forgot Password: Send reset link
 const forgotPassword = async (req, res) => {
-  const { email, mode } = req.body || {};
+  let email = '';
+  let mode = '';
+  if (typeof req.body === 'string') {
+    const raw = String(req.body).trim();
+    try {
+      const parsed = JSON.parse(raw);
+      email = String(parsed.email || '').trim();
+      mode = String(parsed.mode || '').trim();
+    } catch {
+      // Fallback: extract email from raw text even if JSON is invalid
+      const match = raw.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+      email = match ? match[0] : raw;
+    }
+  } else {
+    email = String((req.body?.email || req.query?.email || '')).trim();
+    mode = String(req.body?.mode || '').trim();
+  }
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const preferTemp = (process.env.FORGOT_PASSWORD_MODE || 'temp').toLowerCase() === 'temp' || mode === 'temp';
   const user = await findUserByEmail(email);
-  const preferTemp = (process.env.FORGOT_PASSWORD_MODE || '').toLowerCase() === 'temp' || mode === 'temp';
   try {
     if (!user) {
       // Always respond success to avoid leaking which emails exist
@@ -416,22 +434,20 @@ const forgotPassword = async (req, res) => {
     }
 
     if (preferTemp) {
-      // Generate a temporary password and set it immediately
       const tempPassword = Math.random().toString(36).slice(-10);
-      const hash = await bcrypt.hash(tempPassword, 10);
-      await updateUserPassword(user.user_id, hash);
-      // Clear any existing reset tokens
-      await setPasswordResetToken(user.user_id, null, null);
-      // Email temporary password to the user
       try {
-        await sendTemporaryPasswordEmail({ email: user.email, name: user.name, tempPassword });
-      } catch (mailErr) {
-        console.error('Failed to send temporary password email:', mailErr.message);
+        Promise.resolve().then(() => sendTemporaryPasswordEmail({ email: user.email, name: user.name, tempPassword })).catch(err => {
+          console.error('Failed to send temporary password email:', err.message);
+        });
+        const hash = await bcrypt.hash(tempPassword, 10);
+        await updateUserPassword(user.user_id, hash);
+        await setPasswordResetToken(user.user_id, null, null);
+        return res.json({
+          message: 'Temporary password sent to your email. Use it to login, then change your password.'
+        });
+      } catch (err) {
+        return res.status(500).json({ message: 'Failed to process temporary password' });
       }
-      // Do not return the temp password in the response
-      return res.json({
-        message: 'Temporary password sent to your email. Use it to login, then change your password.'
-      });
     }
 
     // Default: generate reset link via token
@@ -477,6 +493,31 @@ const resetPassword = async (req, res) => {
   }
 };
 
+// Admin-only: Diagnose email configuration and attempt a test send
+const diagnoseEmail = async (req, res) => {
+  try {
+    const brevoConfigured = Boolean(process.env.BREVO_API_KEY && process.env.BREVO_SENDER_EMAIL);
+    const smtpConfigured = Boolean(process.env.SMTP_HOST && process.env.SMTP_PORT && process.env.SMTP_USER && process.env.SMTP_PASS);
+    const method = brevoConfigured ? 'Brevo' : (smtpConfigured ? 'SMTP' : 'none');
+    const to = process.env.TEST_EMAIL || process.env.BREVO_SENDER_EMAIL || process.env.SMTP_USER;
+    const subject = 'Email diagnostics';
+    const html = `<h3>Email diagnostics</h3><p>Method: ${method}</p><p>Time: ${new Date().toISOString()}</p>`;
+
+    const info = { method, brevoConfigured, smtpConfigured, to };
+    if (!to) {
+      return res.status(200).json({ ok: false, info, message: 'No recipient email found; set TEST_EMAIL or BREVO_SENDER_EMAIL or SMTP_USER' });
+    }
+    try {
+      await sendMail(to, subject, html);
+      return res.status(200).json({ ok: true, info, message: 'Diagnostic email sent' });
+    } catch (e) {
+      return res.status(200).json({ ok: false, info, message: e.message });
+    }
+  } catch (err) {
+    return res.status(500).json({ ok: false, message: err.message });
+  }
+};
+
 export default {
   register,
   confirm,
@@ -485,5 +526,6 @@ export default {
   checkSession,
   forgotPassword,
   resetPassword,
-  getPaymentStatus
+  getPaymentStatus,
+  diagnoseEmail
 };
