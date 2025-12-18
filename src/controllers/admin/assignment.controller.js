@@ -1,23 +1,26 @@
+import archiver from 'archiver';
+import axios from 'axios';
 import * as AssignmentModel from '../../models/admin/assignment.model.js';
 import * as AssignmentFileModel from '../../models/admin/assignment_file.model.js';
 import * as SubmissionFileModel from '../../models/admin/assignment_submission_file.model.js';
-import path from 'path';
-import fs from 'fs';
-import mime from 'mime-types';
-import { saveFile, saveAssignmentFile, saveSubmissionFile } from '../../utils/saveFile.js';
-import { extractPublicId, generateDownloadUrl } from '../../utils/downloadFile.js';
-import archiver from 'archiver';
-import { PassThrough } from 'stream';
 import { getFilesBySubmission } from '../../models/admin/assignment_submission_file.model.js';
-import axios from 'axios';
+import { saveAssignmentFile, saveSubmissionFile } from '../../utils/saveFile.js';
 
-// Get all assignments
+// Get all assignments (with pagination)
 export const getAllAssignments = async (req, res) => {
   try {
-    const assignments = await AssignmentModel.getAllAssignments();
+    const limit = Number(req.query.limit) || 50;
+    const offset = Number(req.query.offset) || 0;
+    
+    const assignments = await AssignmentModel.getAllAssignments({ limit, offset });
     res.json({
       success: true,
-      data: assignments
+      data: assignments,
+      pagination: {
+        limit,
+        offset,
+        count: assignments.length
+      }
     });
   } catch (error) {
     console.error('Error fetching assignments:', error);
@@ -131,62 +134,6 @@ export const getAssignmentById = async (req, res) => {
 };
 
 
-// export const createAssignment = async (req, res) => {
-//   try {
-//     const userId = req.user.user_id;
-
-//     // Check permission
-//     const canCreate = await AssignmentModel.canCreateAssignment(userId);
-//     if (!canCreate) {
-//       return res.status(403).json({
-//         success: false,
-//         message: 'You do not have permission to create assignments'
-//       });
-//     }
-
-//     // Check if file was uploaded
-//     if (!req.file) {
-//       return res.status(400).json({
-//         success: false,
-//         message: 'Question file is required'
-//       });
-//     }
-
-//     // Upload to Cloudinary
-//     let fileUrl;
-//     try {
-//       fileUrl = await saveAssignmentFile(req.file);
-//     } catch (uploadError) {
-//       console.error('Cloudinary upload failed:', uploadError);
-//       return res.status(500).json({
-//         success: false,
-//         message: 'File upload to cloud failed: ' + uploadError.message
-//       });
-//     }
-
-//     const assignmentData = {
-//       ...req.body,
-//       question_file_url: fileUrl,           // ← Cloudinary URL
-//       question_file_name: req.file.originalname,
-//       created_by: userId
-//     };
-
-//     const assignment = await AssignmentModel.createAssignment(assignmentData);
-
-//     res.status(201).json({
-//       success: true,
-//       message: 'Assignment created successfully',
-//       data: assignment
-//     });
-
-//   } catch (error) {
-//     console.error('Error creating assignment:', error);
-//     res.status(500).json({
-//       success: false,
-//       message: 'Failed to create assignment'
-//     });
-//   }
-// };
 
 // Update assignment
 

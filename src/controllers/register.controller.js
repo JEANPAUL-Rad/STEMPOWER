@@ -206,106 +206,61 @@ export const list = async (req, res) => {
   try {
     const limit = Number(req.query.limit) || 50;
     const offset = Number(req.query.offset) || 0;
-    const registrations = await listRegistrations({ limit, offset });
+    
+    // Optimized: Use single query with JOINs instead of N+1 queries
+    const registrations = await sql`
+      SELECT 
+        r.*,
+        u.user_id as user_user_id,
+        u.name as user_name,
+        u.email as user_email,
+        u.role as user_role,
+        u.status as user_status,
+        e.enrolled_at,
+        CASE WHEN e.enrollment_id IS NOT NULL THEN true ELSE false END as has_enrollment
+      FROM register r
+      LEFT JOIN users u ON r.user_id = u.user_id
+      LEFT JOIN LATERAL (
+        SELECT enrollment_id, enrolled_at
+        FROM enrollments
+        WHERE (
+          (r.user_id IS NOT NULL AND user_id = r.user_id AND module = r.module)
+          OR (registration_id = r.id AND module = r.module)
+        )
+        AND status = 'active'
+        ORDER BY enrolled_at DESC
+        LIMIT 1
+      ) e ON true
+      ORDER BY r.created_at DESC
+      LIMIT ${limit} OFFSET ${offset}
+    `;
 
-    // Enhance registrations with enrollment status, user info, and module stats
-    const registrationsWithEnrollment = await Promise.all(
-      registrations.map(async (reg) => {
-        try {
-          // Get user info if user_id exists
-          let userInfo = null;
-          if (reg.user_id) {
-            try {
-              const user = await sql`
-								SELECT user_id, name, email, role, status as user_status
-								FROM users
-								WHERE user_id = ${reg.user_id}
-								LIMIT 1
-							`;
-              if (user.length > 0) {
-                userInfo = user[0];
-              }
-            } catch (userError) {
-              console.error(
-                `Error fetching user info for registration ${reg.id}:`,
-                userError,
-              );
-              // Continue without user info
-            }
-          }
-
-          // Enrollment is automatically active when payment is paid - no need to check status
-          // Just mark if enrollment exists
-          let hasEnrollment = false;
-          let enrolledAt = null;
-
-          if (reg.payment_status === "Paid" && reg.module) {
-            try {
-              // Check if enrollment exists (automatically active when paid)
-              let enrollmentData = [];
-
-              if (reg.user_id) {
-                // User has an account - check by user_id + module
-                enrollmentData = await sql`
-								SELECT enrolled_at
-								FROM enrollments
-								WHERE user_id = ${reg.user_id}
-									AND module = ${reg.module}
-									AND status = 'active'
-								ORDER BY enrolled_at DESC
-								LIMIT 1
-							`;
-              }
-
-              // If not found by user_id, try registration_id
-              if (enrollmentData.length === 0) {
-                enrollmentData = await sql`
-								SELECT enrolled_at
-								FROM enrollments
-								WHERE registration_id = ${reg.id}
-									AND module = ${reg.module}
-									AND status = 'active'
-								ORDER BY enrolled_at DESC
-								LIMIT 1
-							`;
-              }
-
-              if (enrollmentData.length > 0) {
-                hasEnrollment = true;
-                enrolledAt = enrollmentData[0].enrolled_at;
-              }
-            } catch (enrollmentError) {
-              console.error(
-                `Error fetching enrollment for registration ${reg.id}:`,
-                enrollmentError,
-              );
-              // Continue without enrollment info
-            }
-          }
-
-          // Module stats removed from admin view - only shown on user dashboard
-
-          return {
-            ...reg,
-            user: userInfo,
-            module_title: reg.module, // Add module_title for clarity
-            enrolled_at: enrolledAt,
-            has_enrollment: hasEnrollment,
-          };
-        } catch (regError) {
-          console.error(`Error processing registration ${reg.id}:`, regError);
-          // Return basic registration data if enhancement fails
-          return {
-            ...reg,
-            module_title: reg.module,
-            user: null,
-            enrolled_at: null,
-            has_enrollment: false,
-            module_stats: null,
-          };
-        }
-      }),
-    );
+    // Transform to match expected format
+    const registrationsWithEnrollment = registrations.map(reg => ({
+      id: reg.id,
+      full_name: reg.full_name,
+      email_address: reg.email_address,
+      contact_number: reg.contact_number,
+      level_of_archicad_skills: reg.level_of_archicad_skills,
+      module: reg.module,
+      module_title: reg.module,
+      payment_amount: reg.payment_amount,
+      payment_status: reg.payment_status,
+      payment_reference: reg.payment_reference,
+      payment_method: reg.payment_method,
+      user_id: reg.user_id,
+      created_at: reg.created_at,
+      updated_at: reg.updated_at,
+      user: reg.user_user_id ? {
+        user_id: reg.user_user_id,
+        name: reg.user_name,
+        email: reg.user_email,
+        role: reg.user_role,
+        status: reg.user_status
+      } : null,
+      enrolled_at: reg.enrolled_at,
+      has_enrollment: reg.has_enrollment || false
+    }));
 
     return res.json(registrationsWithEnrollment);
   } catch (error) {

@@ -15,8 +15,14 @@ export async function getUserEnrolledModules(user_id) {
     // First, try to get from enrollments table
     let enrollments;
     try {
+      // Get the most recent active enrollment for this user.
+      // NOTE: We intentionally avoid SELECT DISTINCT here because PostgreSQL
+      // does not allow ORDER BY on columns that are not in the DISTINCT list,
+      // which was causing: "for SELECT DISTINCT, ORDER BY expressions must appear in select list".
+      // Since each enrollment row already represents a specific module at a time,
+      // we only need the latest row by enrolled_at.
       enrollments = await sql`
-        SELECT DISTINCT module FROM enrollments 
+        SELECT module FROM enrollments 
         WHERE user_id = ${user_id} AND status = 'active'
         ORDER BY enrolled_at DESC
         LIMIT 1

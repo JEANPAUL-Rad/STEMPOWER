@@ -16,14 +16,29 @@ export async function create(req, res) {
   }
 }
 
-// GET /progress
+// GET /progress (with pagination)
 export async function list(req, res) {
   try {
     const { user_id, lesson_id } = req.query;
-    const progress = await ProgressModel.listProgress({ user_id, lesson_id });
-    res.json(progress);
+    const limit = Number(req.query.limit) || 50;
+    const offset = Number(req.query.offset) || 0;
+    
+    const progress = await ProgressModel.listProgress({ user_id, lesson_id, limit, offset });
+    res.json({
+      success: true,
+      data: progress,
+      pagination: {
+        limit,
+        offset,
+        count: progress.length
+      }
+    });
   } catch (err) {
-    res.status(500).json({ message: err.message });
+    console.error('Error listing progress:', err);
+    res.status(500).json({ 
+      success: false,
+      message: err.message 
+    });
   }
 }
 

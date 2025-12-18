@@ -35,30 +35,74 @@ export const createAssignment = async (assignmentData) => {
   }
 };
 
-// Get all assignments
-export const getAllAssignments = async () => {
+// Get all assignments (optimized with pagination and lighter aggregations)
+export const getAllAssignments = async ({ limit = 50, offset = 0 } = {}) => {
   try {
+    // Main query - get assignments with basic info (no heavy aggregations)
     const result = await sql`
       SELECT 
-        a.*,
+        a.assignment_id,
+        a.project_id,
+        a.lesson_id,
+        a.module,
+        a.title,
+        a.description,
+        a.max_file_size_mb,
+        a.allowed_file_types,
+        a.due_date,
+        a.created_by,
+        a.created_at,
+        a.updated_at,
+        a.is_active,
         p.title as project_title,
         l.title as lesson_title,
-        u.name as created_by_name,
-        COUNT(DISTINCT as_sub.user_id) as submission_count,
-        COUNT(DISTINCT ad.user_id) as download_count
+        u.name as created_by_name
       FROM assignments a
       LEFT JOIN projects p ON a.project_id = p.project_id
       LEFT JOIN lessons l ON a.lesson_id = l.lesson_id
       LEFT JOIN users u ON a.created_by = u.user_id
-      LEFT JOIN assignment_submissions as_sub ON a.assignment_id = as_sub.assignment_id
-      LEFT JOIN assignment_downloads ad ON a.assignment_id = ad.assignment_id
       WHERE a.is_active = true
-      GROUP BY a.assignment_id, p.title, l.title, u.name
       ORDER BY a.created_at DESC
+      LIMIT ${limit} OFFSET ${offset}
     `;
+
+    // Get submission counts separately in a single query (much faster than GROUP BY)
+    const assignmentIds = result.map(a => a.assignment_id);
+    let submissionCounts = {};
+    let downloadCounts = {};
+    
+    if (assignmentIds.length > 0) {
+      // Single query for all submission counts
+      const subCounts = await sql`
+        SELECT 
+          assignment_id,
+          COUNT(DISTINCT user_id) as submission_count
+        FROM assignment_submissions
+        WHERE assignment_id = ANY(${assignmentIds})
+        GROUP BY assignment_id
+      `;
+      submissionCounts = Object.fromEntries(
+        subCounts.map(sc => [sc.assignment_id, Number(sc.submission_count)])
+      );
+
+      // Single query for all download counts
+      const dlCounts = await sql`
+        SELECT 
+          assignment_id,
+          COUNT(DISTINCT user_id) as download_count
+        FROM assignment_downloads
+        WHERE assignment_id = ANY(${assignmentIds})
+        GROUP BY assignment_id
+      `;
+      downloadCounts = Object.fromEntries(
+        dlCounts.map(dc => [dc.assignment_id, Number(dc.download_count)])
+      );
+    }
 
     return result.map(assignment => ({
       ...assignment,
+      submission_count: submissionCounts[assignment.assignment_id] || 0,
+      download_count: downloadCounts[assignment.assignment_id] || 0,
       due_date_cat: parseDBTimestamp(assignment.due_date),
       created_at_cat: parseDBTimestamp(assignment.created_at)
     }));

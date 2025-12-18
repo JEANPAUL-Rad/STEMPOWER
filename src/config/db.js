@@ -9,34 +9,7 @@ const connectionString = process.env.DATABASE_URL;
 // Only log queries in development mode or if DB_DEBUG is explicitly enabled
 const shouldLogQueries = process.env.NODE_ENV === 'development' || process.env.DB_DEBUG === 'true';
 
-// Connection pool configuration to prevent "max clients reached" errors
-// 
-// IMPORTANT: For Supabase, you have THREE connection types:
-// 
-// 1. DIRECT CONNECTION (db.xxxxx.supabase.co:5432)
-//    - Limited to 1-4 connections (typically 2 on free tier)
-//    - No pgbouncer support
-//    - Connection pool automatically set to 2 to prevent errors
-//    - RECOMMENDED: Switch to Pooler for better performance
-//
-// 2. POOLER SESSION MODE (aws-1-xxx.pooler.supabase.com:5432)
-//    - Limited to 1-2 connections
-//    - Automatically converted to Transaction mode (port 6543)
-//
-// 3. POOLER TRANSACTION MODE (aws-1-xxx.pooler.supabase.com:6543?pgbouncer=true)
-//    - Allows 3-5+ connections
-//    - Best for production applications
-//    - Automatically configured when using pooler with port 5432
-//
-// If you're getting "max clients reached" errors:
-// - Direct connections: Already optimized (max=2)
-// - Pooler Session mode: Automatically switched to Transaction mode
-// - Can override with DB_MAX_CONNECTIONS environment variable
-// - Ensure connections are properly released (the postgres package handles this automatically)
-//
-// After connection string processing, determine max connections
-// Transaction mode (port 6543) can handle more connections than Session mode
-// We'll set this after we know the final connection string
+
 let maxConnections;
 const idleTimeout = parseInt(process.env.DB_IDLE_TIMEOUT || '10', 10); // seconds
 
