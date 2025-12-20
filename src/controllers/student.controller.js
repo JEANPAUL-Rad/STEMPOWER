@@ -1317,25 +1317,38 @@ export async function getSubmissionFiles(submissionId) {
 }
 export async function downloadLessonFile(req, res) {
   try {
-    const lessonId = parseInt(req.params.lesson_id);
-    if (isNaN(lessonId)) {
-      return res.status(400).json({ message: 'Invalid lesson ID' });
+    const lessonId = Number(req.params.lesson_id);
+    if (!Number.isInteger(lessonId)) {
+      return res.status(400).json({ message: "Invalid lesson ID" });
     }
 
     const lesson = await Student.getLessonDetails(lessonId);
-    if (!lesson || !lesson.file_url) {
-      return res.status(404).json({ message: 'Lesson file not found' });
+    if (!lesson || !lesson.files || lesson.files.length === 0) {
+      return res.status(404).json({ message: "Lesson file not found" });
     }
+
+    // Use the first file's name if available, otherwise fall back to lesson title
+    const file = lesson.files[0];
+    const originalFileName = file.file_name || `${lesson.title || 'lesson'}_${file.file_id}`;
+    const fileUrl = file.file_url;
+
+    const filename = buildDownloadName(
+      fileUrl,
+      originalFileName
+    );
 
     return streamOrRedirect(
       res,
-      lesson.file_url,
-      lesson.title || `lesson-${lessonId}`,
-      'File not found on server'
+      fileUrl,
+      filename,
+      "File not found on server"
     );
   } catch (error) {
-    console.error('Lesson File Download Error:', error);
-    res.status(500).json({ message: 'Internal server error during download', error: error.message });
+    console.error("Lesson File Download Error:", error);
+    res.status(500).json({
+      message: "Internal server error during download",
+      error: error.message,
+    });
   }
 }
 

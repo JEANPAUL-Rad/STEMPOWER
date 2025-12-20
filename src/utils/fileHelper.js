@@ -72,3 +72,19 @@ export const initializeUploadDirectories = () => {
 
   console.log('Upload directories initialized');
 };
+
+
+function buildDownloadName(fileUrl, fallbackName) {
+  try {
+    const cleanUrl = fileUrl.split("?")[0];
+    const ext = path.extname(cleanUrl); // .pdf, .docx, .pptx
+    const safeName = fallbackName
+      .replace(/[^\w\- ]+/g, "")
+      .trim()
+      .replace(/\s+/g, "_");
+
+    return ext ? `${safeName}${ext}` : `${safeName}.pdf`;
+  } catch {
+    return `${fallbackName}.pdf`;
+  }
+}

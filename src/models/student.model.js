@@ -2917,6 +2917,7 @@ export async function getAllModuleContent(user_id) {
         }
         
         const normalizedModule = normalizeModule(userModule);
+        const isMEP = normalizedModule === 'MEP Design';
         
         // Simple module matching (case-insensitive)
         const userModuleLower = (userModule || '').toLowerCase().trim();
@@ -2938,12 +2939,10 @@ export async function getAllModuleContent(user_id) {
                     w.description,
                     w.order_num,
                     w.module,
-                    w.meet_link,
-                    w.meet_description,
                     COUNT(DISTINCT p.project_id) as project_count
                 FROM weeks w
                 LEFT JOIN projects p ON p.week_id = w.week_id
-                GROUP BY w.week_id, w.title, w.description, w.order_num, w.module, w.meet_link, w.meet_description
+                GROUP BY w.week_id, w.title, w.description, w.order_num, w.module
                 ORDER BY w.order_num NULLS LAST, w.week_id
             ` : sql`
                 SELECT 
@@ -2952,8 +2951,6 @@ export async function getAllModuleContent(user_id) {
                     w.description,
                     w.order_num,
                     w.module,
-                    w.meet_link,
-                    w.meet_description,
                     COUNT(DISTINCT p.project_id) as project_count
                 FROM weeks w
                 LEFT JOIN projects p ON p.week_id = w.week_id
@@ -2965,7 +2962,7 @@ export async function getAllModuleContent(user_id) {
                       OR w.module = ${userModule}
                       OR w.module = ${normalizedModule}
                   )
-                GROUP BY w.week_id, w.title, w.description, w.order_num, w.module, w.meet_link, w.meet_description
+                GROUP BY w.week_id, w.title, w.description, w.order_num, w.module
                 ORDER BY w.order_num NULLS LAST, w.week_id
             `,
 
@@ -3030,10 +3027,7 @@ export async function getAllModuleContent(user_id) {
                     l.lesson_id,
                     l.title,
                     l.content,
-                    l.file_url,
-                    l.video_url,
                     l.order_num,
-                    l.module,
                     p.project_id,
                     p.title as project_title,
                     w.week_id,
@@ -3047,10 +3041,10 @@ export async function getAllModuleContent(user_id) {
                     l.lesson_id,
                     l.title,
                     l.content,
-                    l.file_url,
-                    l.video_url,
+                  
+                
                     l.order_num,
-                    l.module,
+            
                     p.project_id,
                     p.title as project_title,
                     w.week_id,
@@ -3166,13 +3160,12 @@ export async function getAllModuleContent(user_id) {
                 ORDER BY q.start_time NULLS LAST, q.quiz_id
             `,
 
-            // Assignments
+            // Assignments (no question_file_url column in DB)
             isMEP ? sql`
                 SELECT 
                     a.assignment_id,
                     a.title,
                     a.description,
-                    a.question_file_url,
                     a.due_date,
                     a.project_id,
                     a.lesson_id,
@@ -3200,7 +3193,6 @@ export async function getAllModuleContent(user_id) {
                     a.assignment_id,
                     a.title,
                     a.description,
-                    a.question_file_url,
                     a.due_date,
                     a.project_id,
                     a.lesson_id,

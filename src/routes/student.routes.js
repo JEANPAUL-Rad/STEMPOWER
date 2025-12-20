@@ -81,6 +81,7 @@ router.post(
 router.get('/download', studentController.proxyDownload);
 // Add this route for direct lesson file download
 router.get('/lessons/:lesson_id/download', studentController.downloadLessonFile);
+
 // Download submission route
 router.get('/download/submission/:submission_id', studentController.downloadSubmission);
 

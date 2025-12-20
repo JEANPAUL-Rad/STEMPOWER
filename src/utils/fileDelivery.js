@@ -125,49 +125,56 @@ export const getResolvedFileUrl = (fileUrl, fileName) => {
   return generateCloudinaryDownloadUrl(fileUrl, fileName) || fileUrl;
 };
 
-const streamRemote = (res, url, downloadName, maxRedirects = 3, options = {}) => {
+// This is the main function that handles streaming remote files with proper headers and redirects
+const streamRemote = async (res, url, downloadName, maxRedirects = 3, options = {}) => {
   return new Promise((resolve, reject) => {
     const doRequest = (currentUrl, redirectsLeft) => {
-      const client = currentUrl.startsWith('https') ? https : http;
-      const req = client.get(currentUrl, (upstream) => {
-        // Follow redirects
-        if ([301, 302, 303, 307, 308].includes(upstream.statusCode) && upstream.headers.location && redirectsLeft > 0) {
-          upstream.resume(); // discard
-          const nextUrl = upstream.headers.location.startsWith('http')
-            ? upstream.headers.location
-            : new URL(upstream.headers.location, currentUrl).toString();
-          return doRequest(nextUrl, redirectsLeft - 1);
+      const protocol = currentUrl.startsWith('https') ? https : http;
+      
+      protocol.get(currentUrl, (response) => {
+        // Handle redirects
+        if ([301, 302, 307, 308].includes(response.statusCode) && redirectsLeft > 0) {
+          const location = response.headers.location;
+          if (!location) {
+            return reject(new Error('Redirect with no Location header'));
+          }
+          return doRequest(location, redirectsLeft - 1);
         }
-        if (upstream.statusCode && upstream.statusCode >= 400) {
-          upstream.resume();
-          return reject(new Error(`Upstream responded ${upstream.statusCode}`));
+
+        // Check for successful response
+        if (response.statusCode !== 200) {
+          const err = new Error(`Request failed with status ${response.statusCode}`);
+          err.statusCode = response.statusCode;
+          return reject(err);
         }
-        let contentType = upstream.headers['content-type'] || (currentUrl.endsWith('.pdf') ? 'application/pdf' : 'application/octet-stream');
-        const dispositionName = downloadName || currentUrl.split('/').pop() || 'file';
-        // Prefer inline for PDFs so browser viewers work; attachment otherwise
-        const nameLooksPdf = typeof dispositionName === 'string' && /\.pdf$/i.test(dispositionName);
-        const urlLooksPdf = /\.pdf($|\?)/i.test(currentUrl);
-        const upstreamLooksPdf = typeof contentType === 'string' && contentType.toLowerCase().includes('pdf');
-        const isPdf = upstreamLooksPdf || urlLooksPdf || nameLooksPdf;
-        if (isPdf && contentType !== 'application/pdf') {
-          contentType = 'application/pdf';
+
+        // Set content type if provided in options
+        if (options.contentType) {
+          res.setHeader('Content-Type', options.contentType);
+        } else if (response.headers['content-type']) {
+          // Use the content type from the response if not provided in options
+          res.setHeader('Content-Type', response.headers['content-type']);
         }
-        res.setHeader('Content-Type', contentType);
-        // Compute final disposition: allow override via options
-        const forceAttachment = options.forceAttachment === true;
-        const forceInline = options.forceInline === true;
-        let dispositionType = isPdf ? 'inline' : 'attachment';
-        if (forceAttachment) dispositionType = 'attachment';
-        if (forceInline) dispositionType = 'inline';
-        // Set both filename and RFC5987 filename* for better Unicode/space handling
-        const contentDisposition = `${dispositionType}; filename="${dispositionName}"; filename*=UTF-8''${encodeURIComponent(dispositionName)}`;
-        res.setHeader('Content-Disposition', contentDisposition);
-        upstream.pipe(res);
-        upstream.on('end', resolve);
-        upstream.on('error', reject);
-      });
-      req.on('error', reject);
+
+        // Set content disposition for download with proper filename encoding
+        if (downloadName) {
+          const safeFilename = encodeURIComponent(downloadName)
+            .replace(/['()]/g, escape)
+            .replace(/\*/g, '%2A')
+            .replace(/"/g, '%22')
+            .replace(/\//g, '%2F')
+            .replace(/:/g, '%3A');
+          
+          res.setHeader('Content-Disposition', `attachment; filename="${downloadName}"; filename*=UTF-8''${safeFilename}`);
+        }
+
+        // Stream the response to the client
+        response.pipe(res);
+        response.on('end', resolve);
+      }).on('error', reject);
     };
+    
+    // Start the request
     doRequest(url, maxRedirects);
   });
 };
