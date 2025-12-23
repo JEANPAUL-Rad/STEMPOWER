@@ -3,6 +3,7 @@ import * as AssignmentFileModel from '../models/admin/assignment_file.model.js';
 import * as Student from '../models/student.model.js';
 import { hasAccessToModule } from '../utils/enrollment.js';
 import { streamOrRedirect } from '../utils/fileDelivery.js';
+import { buildDownloadName } from '../utils/fileHelper.js';
 import { saveFile, saveSubmissionFile } from '../utils/saveFile.js';
 
 const resolveUploadedFileFromRequest = (req) => {
@@ -1327,21 +1328,81 @@ export async function downloadLessonFile(req, res) {
       return res.status(404).json({ message: "Lesson file not found" });
     }
 
-    // Use the first file's name if available, otherwise fall back to lesson title
-    const file = lesson.files[0];
-    const originalFileName = file.file_name || `${lesson.title || 'lesson'}_${file.file_id}`;
+    // Verify the authenticated user has access to this lesson's project
+    const project = await Student.getProjectDetails(lesson.project_id, req.user.user_id);
+    if (!project) {
+      return res.status(403).json({ message: 'You do not have access to this lesson' });
+    }
+
+    // Select file: allow ?file_id=, otherwise pick a "downloadable" file.
+    const requestedFileId = req.query.file_id ? parseInt(String(req.query.file_id), 10) : null;
+    const files = Array.isArray(lesson.files) ? lesson.files : [];
+
+    let file = null;
+    if (requestedFileId && Number.isInteger(requestedFileId)) {
+      file = files.find((f) => Number(f.file_id) === requestedFileId) || null;
+      if (!file) {
+        return res.status(404).json({ message: 'Lesson file not found for this file_id' });
+      }
+    }
+
+    const isDownloadable = (f) => {
+      const t = String(f.file_type || '').toLowerCase();
+      if (t === 'text/url') return false;
+      if (t === 'image/remote') return false;
+      if (t.startsWith('image/')) return false;
+      if (t.startsWith('video/')) return false;
+      return true;
+    };
+    const isProbablyGeneratedName = (name) => {
+      const n = String(name || '').trim();
+      // Cloudinary public IDs often look like: iwcfvlfhgt7xvh0oire.pdf (long, no spaces)
+      if (!n) return true;
+      if (/\s/.test(n)) return false;
+      if (n.length < 16) return false;
+      return /^[a-z0-9_-]+(\.[a-z0-9]{2,6})?$/i.test(n);
+    };
+
+    if (!file) {
+      const candidates = files.filter(isDownloadable);
+      // Prefer files that have a "human" name; otherwise choose the newest (last in list).
+      file =
+        candidates.find((f) => f.file_name && !isProbablyGeneratedName(f.file_name)) ||
+        candidates[candidates.length - 1] ||
+        files[files.length - 1] ||
+        null;
+    }
+
+    if (!file || !file.file_url) {
+      return res.status(404).json({ message: "Lesson file not found" });
+    }
+
+    // If this is a link (e.g., YouTube), open it instead of forcing a download.
+    if (String(file.file_type || '').toLowerCase() === 'text/url') {
+      return res.redirect(file.file_url);
+    }
+
+    // Prefer stored original name; fall back to lesson title if stored name looks generated.
+    const baseName =
+      (file.file_name && !isProbablyGeneratedName(file.file_name))
+        ? file.file_name
+        : (lesson.title || file.file_name || `lesson_${file.file_id}`);
+    const originalFileName = baseName;
     const fileUrl = file.file_url;
 
     const filename = buildDownloadName(
       fileUrl,
-      originalFileName
+      originalFileName,
+      file.file_type
     );
 
     return streamOrRedirect(
       res,
       fileUrl,
       filename,
-      "File not found on server"
+      "File not found on server",
+      // Helps browsers show the right file type in downloads
+      file.file_type ? { contentType: file.file_type } : {}
     );
   } catch (error) {
     console.error("Lesson File Download Error:", error);

@@ -6,6 +6,28 @@ import http from 'http';
 
 export const isRemoteUrl = (url = '') => /^https?:\/\//i.test(url);
 const isCloudinaryUrl = (url = '') => /^https?:\/\/res\.cloudinary\.com\//i.test(url);
+const extFromContentType = (contentType = '') => {
+  const t = String(contentType || '').toLowerCase().split(';')[0].trim();
+  const map = {
+    'application/pdf': '.pdf',
+    'application/msword': '.doc',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+    'application/vnd.ms-powerpoint': '.ppt',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation': '.pptx',
+    'application/vnd.ms-excel': '.xls',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+    'text/plain': '.txt',
+    'text/csv': '.csv',
+    'image/jpeg': '.jpg',
+    'image/png': '.png',
+    'image/gif': '.gif',
+    'image/webp': '.webp',
+    'video/mp4': '.mp4',
+    'video/webm': '.webm',
+    'application/zip': '.zip',
+  };
+  return map[t] || '';
+};
 
 export const resolveLocalDownloadPath = (fileUrl = '') => {
   if (!fileUrl) return null;
@@ -46,13 +68,15 @@ const extractCloudinaryPublicId = (url = '') => {
   return { resourceType, publicId, format };
 };
 
-// Insert fl_attachment (optionally with a filename) right after /upload/
-const addAttachmentTransformation = (url = '', fileName) => {
+// Insert fl_attachment right after /upload/
+// NOTE: Do NOT pass a filename in the transformation.
+// Cloudinary can reject fl_attachment:<filename> (400) depending on asset settings / encoding.
+// We set Content-Disposition ourselves when proxying through this server.
+const addAttachmentTransformation = (url = '') => {
   if (!isCloudinaryUrl(url)) return null;
   // Preserve any existing transformations by inserting fl_attachment first
   // e.g., .../upload/ -> .../upload/fl_attachment[:filename]/
-  const encodedName = fileName ? encodeURIComponent(fileName) : '';
-  const attachSegment = `fl_attachment${encodedName ? `:${encodedName}` : ''}`;
+  const attachSegment = `fl_attachment`;
   return url.replace(/\/upload\/(?!fl_attachment)/, `/upload/${attachSegment}/`);
 };
 
@@ -158,14 +182,25 @@ const streamRemote = async (res, url, downloadName, maxRedirects = 3, options = 
 
         // Set content disposition for download with proper filename encoding
         if (downloadName) {
-          const safeFilename = encodeURIComponent(downloadName)
+          // If the provided name has no extension, infer one from response content-type.
+          const inferredExt = extFromContentType(response.headers['content-type']);
+          const hasExt = path.extname(String(downloadName)) !== '';
+          const resolvedName = !hasExt && inferredExt ? `${downloadName}${inferredExt}` : downloadName;
+
+          // "filename=" should be ASCII-safe to avoid header parsing issues in browsers.
+          const asciiName = String(resolvedName)
+            .replace(/[/\\]/g, '_')
+            .replace(/["\r\n]/g, '')
+            .trim() || 'download';
+
+          const safeFilenameStar = encodeURIComponent(asciiName)
             .replace(/['()]/g, escape)
             .replace(/\*/g, '%2A')
             .replace(/"/g, '%22')
             .replace(/\//g, '%2F')
             .replace(/:/g, '%3A');
           
-          res.setHeader('Content-Disposition', `attachment; filename="${downloadName}"; filename*=UTF-8''${safeFilename}`);
+          res.setHeader('Content-Disposition', `attachment; filename="${asciiName}"; filename*=UTF-8''${safeFilenameStar}`);
         }
 
         // Stream the response to the client
@@ -188,7 +223,7 @@ export const streamOrRedirect = async (res, fileUrl, downloadName, notFoundMessa
     const candidates = [];
     // If Cloudinary URL, try an fl_attachment URL first (works for public assets)
     if (isCloudinaryUrl(fileUrl)) {
-      const attachUrl = addAttachmentTransformation(fileUrl, downloadName);
+      const attachUrl = addAttachmentTransformation(fileUrl);
       if (attachUrl) candidates.push(attachUrl);
     }
     candidates.push(...generateCloudinaryCandidateUrls(fileUrl, downloadName), fileUrl);

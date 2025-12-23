@@ -1,4 +1,4 @@
-import bcrypt from 'bcrypt';
+import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import sql from '../config/db.js';
 import { createEnrollment } from '../models/enrollment.model.js';

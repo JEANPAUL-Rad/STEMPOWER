@@ -1,6 +1,6 @@
 
 import sql, { retryQuery, handleConnectionError } from '../config/db.js';
-import bcrypt from 'bcrypt';
+import bcrypt from 'bcryptjs';
 
 export const createUser = async ({ name, email, password, role = 'student' }) => {
   try {

@@ -13,7 +13,10 @@ export async function createLesson(req, res) {
       week_id,
       file_urls,
       file_url,
+      file_names,
+      file_name,
       upload_image,
+      upload_image_name,
       video_url
     } = req.body;
 
@@ -45,6 +48,7 @@ export async function createLesson(req, res) {
     }
     // Handle pre-uploaded file URLs passed in body (accept file_urls or file_url)
     const stringUrls = [];
+    const stringNames = [];
     if (Array.isArray(file_urls)) {
       stringUrls.push(...file_urls);
     } else if (typeof file_urls === 'string' && file_urls.trim() !== '') {
@@ -52,16 +56,31 @@ export async function createLesson(req, res) {
         ...file_urls.split(',').map((s) => s.trim()).filter(Boolean)
       );
     }
+    if (Array.isArray(file_names)) {
+      stringNames.push(...file_names);
+    } else if (typeof file_names === 'string' && file_names.trim() !== '') {
+      stringNames.push(
+        ...file_names.split(',').map((s) => s.trim()).filter(Boolean)
+      );
+    }
     if (file_url && typeof file_url === 'string') {
       stringUrls.push(file_url.trim());
+      // Allow an explicit name for single file_url
+      if (file_name && typeof file_name === 'string') {
+        stringNames.push(file_name.trim());
+      } else {
+        stringNames.push('');
+      }
     }
     // Deduplicate
     const uniqueUrls = [...new Set(stringUrls.filter(Boolean))];
-    for (const url of uniqueUrls) {
+    for (let i = 0; i < uniqueUrls.length; i++) {
+      const url = uniqueUrls[i];
+      const providedName = stringNames[i];
       const meta = await LessonFileModel.addLessonFile({
         lesson_id: lesson.lesson_id,
         file_url: url,
-        file_name: url.split('/').pop() || null,
+        file_name: (providedName && String(providedName).trim()) ? String(providedName).trim() : (url.split('/').pop() || null),
         file_type: null,
         file_size_bytes: null,
         uploaded_by: req.user?.user_id || null,
@@ -75,7 +94,9 @@ export async function createLesson(req, res) {
       const meta = await LessonFileModel.addLessonFile({
         lesson_id: lesson.lesson_id,
         file_url: imageUrl,
-        file_name: imageUrl.split('/').pop() || null,
+        file_name: (typeof upload_image_name === 'string' && upload_image_name.trim())
+          ? upload_image_name.trim()
+          : (imageUrl.split('/').pop() || null),
         file_type: 'image/remote',
         file_size_bytes: null,
         uploaded_by: req.user?.user_id || null,
@@ -135,7 +156,10 @@ export async function updateLesson(req, res) {
       remove_file_ids,
       file_urls,
       file_url,
+      file_names,
+      file_name,
       upload_image,
+      upload_image_name,
       video_url
     } = req.body || {};
 
@@ -180,6 +204,7 @@ export async function updateLesson(req, res) {
     }
     // Add pre-uploaded file URLs
     const pendingUrls = [];
+    const pendingNames = [];
     if (Array.isArray(file_urls)) {
       pendingUrls.push(...file_urls);
     } else if (typeof file_urls === 'string' && file_urls.trim() !== '') {
@@ -187,15 +212,29 @@ export async function updateLesson(req, res) {
         ...file_urls.split(',').map((s) => s.trim()).filter(Boolean)
       );
     }
+    if (Array.isArray(file_names)) {
+      pendingNames.push(...file_names);
+    } else if (typeof file_names === 'string' && file_names.trim() !== '') {
+      pendingNames.push(
+        ...file_names.split(',').map((s) => s.trim()).filter(Boolean)
+      );
+    }
     if (file_url && typeof file_url === 'string') {
       pendingUrls.push(file_url.trim());
+      if (file_name && typeof file_name === 'string') {
+        pendingNames.push(file_name.trim());
+      } else {
+        pendingNames.push('');
+      }
     }
     const uniquePending = [...new Set(pendingUrls.filter(Boolean))];
-    for (const url of uniquePending) {
+    for (let i = 0; i < uniquePending.length; i++) {
+      const url = uniquePending[i];
+      const providedName = pendingNames[i];
       await LessonFileModel.addLessonFile({
         lesson_id: lessonId,
         file_url: url,
-        file_name: url.split('/').pop() || null,
+        file_name: (providedName && String(providedName).trim()) ? String(providedName).trim() : (url.split('/').pop() || null),
         file_type: null,
         file_size_bytes: null,
         uploaded_by: req.user?.user_id || null,
@@ -207,7 +246,9 @@ export async function updateLesson(req, res) {
       await LessonFileModel.addLessonFile({
         lesson_id: lessonId,
         file_url: imageUrlUpdate,
-        file_name: imageUrlUpdate.split('/').pop() || null,
+        file_name: (typeof upload_image_name === 'string' && upload_image_name.trim())
+          ? upload_image_name.trim()
+          : (imageUrlUpdate.split('/').pop() || null),
         file_type: 'image/remote',
         file_size_bytes: null,
         uploaded_by: req.user?.user_id || null,

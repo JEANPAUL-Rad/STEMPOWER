@@ -73,17 +73,48 @@ export const initializeUploadDirectories = () => {
   console.log('Upload directories initialized');
 };
 
+const extFromMimeType = (mimeType = '') => {
+  const t = String(mimeType || '').toLowerCase().trim();
+  const map = {
+    'application/pdf': '.pdf',
+    'application/msword': '.doc',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+    'application/vnd.ms-powerpoint': '.ppt',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation': '.pptx',
+    'application/vnd.ms-excel': '.xls',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+    'text/plain': '.txt',
+    'text/csv': '.csv',
+    'image/jpeg': '.jpg',
+    'image/jpg': '.jpg',
+    'image/png': '.png',
+    'image/gif': '.gif',
+    'image/webp': '.webp',
+    'video/mp4': '.mp4',
+    'video/webm': '.webm',
+    'application/zip': '.zip',
+  };
+  return map[t] || '';
+};
 
-function buildDownloadName(fileUrl, fallbackName) {
+// Build a safe download filename, preserving extension from the URL if possible.
+export function buildDownloadName(fileUrl, fallbackName, mimeType) {
   try {
     const cleanUrl = fileUrl.split("?")[0];
-    const ext = path.extname(cleanUrl); // .pdf, .docx, .pptx
-    const safeName = fallbackName
-      .replace(/[^\w\- ]+/g, "")
-      .trim()
-      .replace(/\s+/g, "_");
+    const urlExt = path.extname(cleanUrl); // .pdf, .docx, .pptx
+    const nameExt = path.extname(String(fallbackName || ''));
+    const mimeExt = extFromMimeType(mimeType);
+    const ext = urlExt || nameExt || mimeExt || '.pdf';
 
-    return ext ? `${safeName}${ext}` : `${safeName}.pdf`;
+    // Remove any extension from the base name to avoid "file.pdf.pdf"
+    const baseRaw = nameExt ? path.basename(String(fallbackName || ''), nameExt) : String(fallbackName || '');
+    // Keep the original name as much as possible, only removing characters that break headers / paths.
+    const safeBase = baseRaw
+      .replace(/[/\\]+/g, '_')
+      .replace(/[\r\n\t\0]+/g, ' ')
+      .trim();
+
+    return `${safeBase || 'download'}${ext}`;
   } catch {
     return `${fallbackName}.pdf`;
   }

@@ -74,10 +74,19 @@ export async function updateSubmissionAnswer(answer_id, data) {
 }
 
 export async function deleteSubmissionAnswer(answer_id) {
-  await sql`
-    DELETE FROM submission_answers WHERE answer_id = ${answer_id}
-  `;
-  return true;
+  return await sql.begin(async (trx) => {
+    // Remove any per-answer attachments first (if FK doesn't cascade)
+    await trx`
+      DELETE FROM submission_answer_files
+      WHERE answer_id = ${answer_id}
+    `;
+
+    await trx`
+      DELETE FROM submission_answers
+      WHERE answer_id = ${answer_id}
+    `;
+    return true;
+  });
 }
 
 

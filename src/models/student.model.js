@@ -1,4 +1,4 @@
-import bcrypt from 'bcrypt';
+import bcrypt from 'bcryptjs';
 import sql from '../config/db.js';
 import { createEnrollment } from '../models/enrollment.model.js';
 import { getUserEnrolledModules } from '../utils/enrollment.js';
