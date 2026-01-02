@@ -241,30 +241,119 @@ export async function updateLesson(req, res) {
       });
     }
 
-    const imageUrlUpdate = typeof upload_image === 'string' ? upload_image.trim() : '';
-    if (imageUrlUpdate) {
-      await LessonFileModel.addLessonFile({
-        lesson_id: lessonId,
-        file_url: imageUrlUpdate,
-        file_name: (typeof upload_image_name === 'string' && upload_image_name.trim())
-          ? upload_image_name.trim()
-          : (imageUrlUpdate.split('/').pop() || null),
-        file_type: 'image/remote',
-        file_size_bytes: null,
-        uploaded_by: req.user?.user_id || null,
-      });
+    // Enforce single primary file (non-image, non-video) if explicit file_url provided
+    if (file_url !== undefined) {
+      const newFileUrl = typeof file_url === 'string' ? file_url.trim() : '';
+      const existingFiles = await LessonFileModel.getFilesByLessonId(lessonId);
+      const oldPrimaryFiles = existingFiles.filter(f =>
+        !f.file_type || (f.file_type && !f.file_type.startsWith('image/') && !f.file_type.startsWith('video/'))
+      );
+      if (newFileUrl) {
+        let exists = false;
+        for (const f of oldPrimaryFiles) {
+          if (f.file_url === newFileUrl) {
+            exists = true;
+          } else {
+            await LessonFileModel.deleteFile(f.file_id);
+          }
+        }
+        if (!exists) {
+          await LessonFileModel.addLessonFile({
+            lesson_id: lessonId,
+            file_url: newFileUrl,
+            file_name: (typeof file_name === 'string' && file_name.trim())
+              ? file_name.trim()
+              : (newFileUrl.split('/').pop() || null),
+            file_type: null,
+            file_size_bytes: null,
+            uploaded_by: req.user?.user_id || null,
+          });
+        }
+      } else {
+        // Clearing the primary file
+        for (const f of oldPrimaryFiles) {
+          await LessonFileModel.deleteFile(f.file_id);
+        }
+      }
     }
 
-    const videoUrlUpdate = typeof video_url === 'string' ? video_url.trim() : '';
-    if (videoUrlUpdate) {
-      await LessonFileModel.addLessonFile({
-        lesson_id: lessonId,
-        file_url: videoUrlUpdate,
-        file_name: videoUrlUpdate.split('/').pop() || 'video-link',
-        file_type: 'text/url',
-        file_size_bytes: null,
-        uploaded_by: req.user?.user_id || null,
-      });
+    // Handle optional standalone image/video URLs
+    // Enforce single image: delete old images if a new one is provided or cleared
+    if (upload_image !== undefined) {
+      const imageUrlUpdate = typeof upload_image === 'string' ? upload_image.trim() : '';
+      
+      const existingFiles = await LessonFileModel.getFilesByLessonId(lessonId);
+      const oldImages = existingFiles.filter(f => 
+        (f.file_type && f.file_type.startsWith('image/')) || 
+        f.file_type === 'image/remote'
+      );
+
+      if (imageUrlUpdate) {
+        let exists = false;
+        for (const img of oldImages) {
+          if (img.file_url === imageUrlUpdate) {
+            exists = true;
+          } else {
+            await LessonFileModel.deleteFile(img.file_id);
+          }
+        }
+        
+        if (!exists) {
+          await LessonFileModel.addLessonFile({
+            lesson_id: lessonId,
+            file_url: imageUrlUpdate,
+            file_name: (typeof upload_image_name === 'string' && upload_image_name.trim())
+              ? upload_image_name.trim()
+              : (imageUrlUpdate.split('/').pop() || null),
+            file_type: 'image/remote',
+            file_size_bytes: null,
+            uploaded_by: req.user?.user_id || null,
+          });
+        }
+      } else {
+        // Explicitly cleared (empty string or null passed as something else but caught here?)
+        // If it was undefined, we wouldn't be here. If it's empty string, we delete all.
+        for (const img of oldImages) {
+          await LessonFileModel.deleteFile(img.file_id);
+        }
+      }
+    }
+
+    // Enforce single video: delete old videos if a new one is provided or cleared
+    if (video_url !== undefined) {
+      const videoUrlUpdate = typeof video_url === 'string' ? video_url.trim() : '';
+      
+      const existingFiles = await LessonFileModel.getFilesByLessonId(lessonId);
+      const oldVideos = existingFiles.filter(f => 
+        (f.file_type && f.file_type.startsWith('video/')) || 
+        f.file_type === 'text/url'
+      );
+
+      if (videoUrlUpdate) {
+        let exists = false;
+        for (const vid of oldVideos) {
+          if (vid.file_url === videoUrlUpdate) {
+            exists = true;
+          } else {
+            await LessonFileModel.deleteFile(vid.file_id);
+          }
+        }
+        
+        if (!exists) {
+          await LessonFileModel.addLessonFile({
+            lesson_id: lessonId,
+            file_url: videoUrlUpdate,
+            file_name: videoUrlUpdate.split('/').pop() || 'video-link',
+            file_type: 'text/url',
+            file_size_bytes: null,
+            uploaded_by: req.user?.user_id || null,
+          });
+        }
+      } else {
+        for (const vid of oldVideos) {
+          await LessonFileModel.deleteFile(vid.file_id);
+        }
+      }
     }
 
     const filesNow = await LessonFileModel.getFilesByLessonId(lessonId);
