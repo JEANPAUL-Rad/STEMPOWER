@@ -2295,11 +2295,7 @@ export async function getStudentAssignments(userId, projectId = null) {
                     END as has_submitted
                 FROM assignments a
                 WHERE a.is_active = true
-                    AND (
-                        a.project_id = ${projectId} 
-                        OR 
-                        EXISTS (SELECT 1 FROM lessons l WHERE l.lesson_id = a.lesson_id AND l.project_id = ${projectId})
-                    )
+                    AND a.project_id = ${projectId}
                 ORDER BY a.due_date ASC NULLS LAST, a.created_at DESC
             `
             : sql`

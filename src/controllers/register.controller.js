@@ -93,11 +93,11 @@ export const create = async (req, res) => {
 
     // Resolve payment amount:
     // - If client provided a number, use it
-    // - Otherwise, base on selected module (MEP Design = 60000, others = 30000)
+    // - Otherwise, base on selected module (MEP Design = 250000, others = 150000)
     const resolvedAmount =
       typeof payment_amount === "number"
         ? payment_amount
-        : (module === "MEP Design" ? 60000 : 30000);
+        : (module === "MEP Design" ? 250000 : 150000);
 
     const registration = await createRegistration({
       full_name,
