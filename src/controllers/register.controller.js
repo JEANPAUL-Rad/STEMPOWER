@@ -5,9 +5,8 @@ import {
   createRegistration,
   deleteRegistration,
   getRegistrationById,
-  listRegistrations,
   updatePayment,
-  updateRegistration,
+  updateRegistration
 } from "../models/register.model.js";
 import { findUserByEmail } from "../models/user.model.js";
 import {
