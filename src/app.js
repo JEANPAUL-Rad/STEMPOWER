@@ -91,6 +91,9 @@ import protoforialRoutes from './routes/protoforial.routes.js';
 import registerRoutes from './routes/register.routes.js';
 import studentRoutes from './routes/student.routes.js';
 import userRoutes from './routes/user.routes.js';
+import announcementRoutes from './routes/announcement.routes.js';
+import advertisementRoutes from './routes/advertisement.routes.js';
+import negProtoforialRoutes from './routes/negprotoforial.routes.js';
 
 // Download routes
 app.get('/api/download/question-file/:quizId/:questionId', async (req, res) => {
@@ -210,7 +213,6 @@ app.get('/api/download', async (req, res) => {
     res.status(500).json({ message: 'Internal server error during download.' });
   }
 });
-
 // Mount routes
 app.use('/api/v1/users', userRoutes);
 app.use('/api/v1/register', registerRoutes);
@@ -228,9 +230,13 @@ app.use('/api/v1/admin', adminResourceRoutes);
 app.use('/api/v1/admin', submissionAnswerRoutes);
 app.use('/api/v1/admin', adminLiveSessionRoutes);
 app.use('/api/v1/admin/contacts', contactRoutes);
+// Register routes (adjust base path to match your existing pattern)
+app.use('/api/announcements',  announcementRoutes);
+app.use('/api/advertisements', advertisementRoutes);
 // Public contacts endpoint (same controller) to ensure availability outside admin namespace
 app.use('/api/contacts', contactRoutes);
 app.use('/api/v1/admin', adminAssignmentRoutes);
+app.use('/api/negprotoforial', negProtoforialRoutes);
 
 // Fallback route
 app.use((req, res) => {
