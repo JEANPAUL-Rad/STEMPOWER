@@ -1,10 +1,10 @@
 import sql from '../../config/db.js';
 
 // Create a week
-export async function createWeek({ title, description, order_num, module }) {
+export async function createWeek({ title, description, order_num, module, is_active = true }) {
   const res = await sql`
-    INSERT INTO weeks (title, description, order_num, module)
-    VALUES (${title}, ${description}, ${order_num}, ${module || null})
+    INSERT INTO weeks (title, description, order_num, module, is_active)
+    VALUES (${title}, ${description}, ${order_num}, ${module || null}, ${is_active})
     RETURNING *
   `;
   return res[0];
@@ -27,13 +27,14 @@ export async function getWeekById(week_id) {
 }
 
 // Update week
-export async function updateWeek(week_id, { title, description, order_num, module }) {
+export async function updateWeek(week_id, { title, description, order_num, module, is_active }) {
   const res = await sql`
     UPDATE weeks SET
       title = COALESCE(${title}, title),
       description = COALESCE(${description}, description),
       order_num = COALESCE(${order_num}, order_num),
       module = COALESCE(${module}, module),
+      is_active = COALESCE(${is_active}, is_active),
       updated_at = CURRENT_TIMESTAMP
     WHERE week_id = ${week_id}
     RETURNING *

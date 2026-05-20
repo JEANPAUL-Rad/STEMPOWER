@@ -7,16 +7,17 @@ export async function createLesson({
   project_id, 
   parent_lesson_id, 
   order_num,
-  week_id = null
+  week_id = null,
+  is_active = true
 }) {
   const [lesson] = await sql`
     INSERT INTO lessons (
       title, content, project_id, parent_lesson_id, 
-      order_num, week_id
+      order_num, week_id, is_active
     )
     VALUES (
       ${title}, ${content}, ${project_id}, ${parent_lesson_id}, 
-      ${order_num}, ${week_id}
+      ${order_num}, ${week_id}, ${is_active}
     )
     RETURNING *
   `;
@@ -110,7 +111,7 @@ export async function getLessonById(lesson_id) {
 // Update lesson
 export async function updateLesson(lesson_id, { 
   title, content, project_id, parent_lesson_id, 
-  order_num, week_id = null
+  order_num, week_id = null, is_active
 }) {
   const [lesson] = await sql`
     UPDATE lessons SET
@@ -120,6 +121,7 @@ export async function updateLesson(lesson_id, {
       parent_lesson_id = COALESCE(${parent_lesson_id}, parent_lesson_id),
       order_num = COALESCE(${order_num}, order_num),
       week_id = COALESCE(${week_id}, week_id),
+      is_active = COALESCE(${is_active}, is_active),
       updated_at = CURRENT_TIMESTAMP
     WHERE lesson_id = ${lesson_id}::int
     RETURNING *

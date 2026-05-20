@@ -46,12 +46,14 @@ export async function getWeeks(user_id) {
             ? await sql`
                 SELECT w.*
                 FROM weeks w
+                WHERE COALESCE(w.is_active, true) = true
                 ORDER BY w.order_num NULLS LAST, w.week_id ASC
               `
             : await sql`
                 SELECT w.*
                 FROM weeks w
-                WHERE w.module IS NOT NULL 
+                WHERE COALESCE(w.is_active, true) = true
+                  AND w.module IS NOT NULL 
                   AND w.module != ''
                   AND (
                       LOWER(TRIM(w.module)) = ${userModuleLower}
@@ -128,7 +130,7 @@ export async function getProjectsByWeek(week_id, user_id) {
             throw new Error('You do not have access to this course');
         }
         
-        const projects = await sql`SELECT * FROM projects WHERE week_id = ${week_id} ORDER BY order_num;`;
+        const projects = await sql`SELECT * FROM projects WHERE week_id = ${week_id} AND COALESCE(is_active, true) = true ORDER BY order_num;`;
         
         // Return image URLs as-is (Cloudinary URLs or null)
         return projects.map(project => ({
@@ -163,12 +165,17 @@ export async function getProjectDetails(project_id, user_id) {
         const projects = isMEP
             ? await sql`
                 SELECT p.* FROM projects p
-                WHERE p.project_id = ${project_id}
+                LEFT JOIN weeks w ON p.week_id = w.week_id
+                WHERE p.project_id = ${project_id} 
+                  AND COALESCE(p.is_active, true) = true
+                  AND (w.week_id IS NULL OR COALESCE(w.is_active, true) = true)
               `
             : await sql`
                 SELECT p.* FROM projects p
-                JOIN weeks w ON p.week_id = w.week_id
+                LEFT JOIN weeks w ON p.week_id = w.week_id
                 WHERE p.project_id = ${project_id}
+                  AND COALESCE(p.is_active, true) = true
+                  AND (w.week_id IS NULL OR COALESCE(w.is_active, true) = true)
                   AND w.module IS NOT NULL 
                   AND w.module != ''
                   AND (
@@ -233,8 +240,9 @@ export async function getAllProjects(user_id) {
                     END as completion_percentage
                 FROM projects p
                 JOIN weeks w ON p.week_id = w.week_id
-                LEFT JOIN lessons l ON p.project_id = l.project_id
+                LEFT JOIN lessons l ON p.project_id = l.project_id AND l.is_active = true
                 LEFT JOIN progress pr ON l.lesson_id = pr.lesson_id AND pr.user_id = ${user_id}
+                WHERE p.is_active = true AND w.is_active = true
                 GROUP BY p.project_id, w.title, w.order_num, w.module
                 ORDER BY w.order_num, p.order_num;
               `
@@ -253,9 +261,11 @@ export async function getAllProjects(user_id) {
                     END as completion_percentage
                 FROM projects p
                 JOIN weeks w ON p.week_id = w.week_id
-                LEFT JOIN lessons l ON p.project_id = l.project_id
+                LEFT JOIN lessons l ON p.project_id = l.project_id AND COALESCE(l.is_active, true) = true
                 LEFT JOIN progress pr ON l.lesson_id = pr.lesson_id AND pr.user_id = ${user_id}
-                WHERE w.module IS NOT NULL 
+                WHERE COALESCE(p.is_active, true) = true 
+                  AND COALESCE(w.is_active, true) = true
+                  AND w.module IS NOT NULL 
                   AND w.module != ''
                   AND (
                       LOWER(TRIM(w.module)) = ${userModuleLower}
@@ -339,6 +349,7 @@ export async function getLessonsByProject(project_id, user_id = null) {
             file_data.image_url AS primary_image_url,
             file_data.video_url AS primary_video_url
         FROM lessons l
+        JOIN projects p ON l.project_id = p.project_id
         LEFT JOIN LATERAL (
             SELECT
                 json_agg(
@@ -371,6 +382,8 @@ export async function getLessonsByProject(project_id, user_id = null) {
             WHERE lf.lesson_id = l.lesson_id
         ) AS file_data ON TRUE
         WHERE l.project_id = ${project_id}
+          AND COALESCE(l.is_active, true) = true
+          AND COALESCE(p.is_active, true) = true
         ORDER BY l.order_num ASC NULLS FIRST, l.created_at ASC
     `;
 
@@ -430,6 +443,7 @@ export async function getLessonDetails(lesson_id) {
             WHERE lf.lesson_id = l.lesson_id
         ) AS file_data ON TRUE
         WHERE l.lesson_id = ${lesson_id}
+          AND l.is_active = true
         LIMIT 1
     `;
     if (lessons.length === 0) return null;
@@ -459,6 +473,9 @@ export async function markLessonComplete(user_id, lesson_id) {
         LEFT JOIN projects p ON l.project_id = p.project_id
         LEFT JOIN weeks w ON p.week_id = w.week_id
         WHERE l.lesson_id = ${lesson_id}
+          AND COALESCE(l.is_active, true) = true
+          AND (p.project_id IS NULL OR COALESCE(p.is_active, true) = true)
+          AND (w.week_id IS NULL OR COALESCE(w.is_active, true) = true)
         LIMIT 1
     `;
 
@@ -537,6 +554,8 @@ export async function getQuizDetails(quiz_id, user_id) {
             JOIN weeks w ON COALESCE(p_q.week_id, p_l.week_id) = w.week_id
             LEFT JOIN quiz_submissions qs ON q.quiz_id = qs.quiz_id AND qs.user_id = ${user_id}
             WHERE q.quiz_id = ${quiz_id}
+              AND COALESCE(q.is_active, true) = true
+              AND COALESCE(w.is_active, true) = true
               AND w.module IS NOT NULL 
               AND w.module != ''
               AND (
@@ -773,7 +792,10 @@ export async function getAllProjectQuizzes(user_id) {
         JOIN weeks w ON p.week_id = w.week_id
         LEFT JOIN quizzes q ON p.project_id = q.project_id
         LEFT JOIN quiz_submissions qs ON q.quiz_id = qs.quiz_id AND qs.user_id = ${user_id}
-        WHERE w.module IS NOT NULL 
+        WHERE w.is_active = true 
+          AND p.is_active = true
+          AND (q.quiz_id IS NULL OR q.is_active = true)
+          AND w.module IS NOT NULL 
           AND w.module != ''
           AND (
               LOWER(TRIM(w.module)) = ${userModuleLower}
@@ -952,10 +974,11 @@ export async function getResources(type, user_id) {
         
         const isMEP = normalizedModule === 'MEP Design';
         const whereClause = isMEP
-            ? sql`WHERE 1=1`
+            ? sql`WHERE COALESCE(r.is_active, true) = true`
             : sql`
-                WHERE (
-                    -- Public resources are always visible
+                WHERE COALESCE(r.is_active, true) = true
+                  AND (
+                    -- Public resources are always visible (if active)
                     r.is_public = true
                     OR (
                         -- Resources explicitly tagged with a module
@@ -971,6 +994,7 @@ export async function getResources(type, user_id) {
                     OR (
                         -- Resources linked to a week whose module matches the user
                         r.week_id IS NOT NULL
+                        AND COALESCE(w.is_active, true) = true
                         AND w.module IS NOT NULL
                         AND w.module != ''
                         AND (
@@ -1208,7 +1232,7 @@ export async function getProjectsByWeekDashboard(user_id) {
                         ORDER BY p.order_num
                     ) as projects
                 FROM weeks w
-                LEFT JOIN projects p ON w.week_id = p.week_id
+                LEFT JOIN projects p ON w.week_id = p.week_id AND COALESCE(p.is_active, true) = true
                 LEFT JOIN (
                     SELECT
                         l.project_id,
@@ -1221,8 +1245,10 @@ export async function getProjectsByWeekDashboard(user_id) {
                         END as completion_percentage
                     FROM lessons l
                     LEFT JOIN progress pr ON l.lesson_id = pr.lesson_id AND pr.user_id = ${user_id}
+                    WHERE COALESCE(l.is_active, true) = true
                     GROUP BY l.project_id
                 ) lesson_counts ON p.project_id = lesson_counts.project_id
+                WHERE COALESCE(w.is_active, true) = true
                 GROUP BY w.week_id, w.title, w.order_num
                 ORDER BY w.order_num;
               `
@@ -1246,7 +1272,7 @@ export async function getProjectsByWeekDashboard(user_id) {
                         ORDER BY p.order_num
                     ) as projects
                 FROM weeks w
-                LEFT JOIN projects p ON w.week_id = p.week_id
+                LEFT JOIN projects p ON w.week_id = p.week_id AND COALESCE(p.is_active, true) = true
                 LEFT JOIN (
                     SELECT
                         l.project_id,
@@ -1259,9 +1285,11 @@ export async function getProjectsByWeekDashboard(user_id) {
                         END as completion_percentage
                     FROM lessons l
                     LEFT JOIN progress pr ON l.lesson_id = pr.lesson_id AND pr.user_id = ${user_id}
+                    WHERE COALESCE(l.is_active, true) = true
                     GROUP BY l.project_id
                 ) lesson_counts ON p.project_id = lesson_counts.project_id
-                WHERE w.module IS NOT NULL 
+                WHERE COALESCE(w.is_active, true) = true
+                  AND w.module IS NOT NULL 
                   AND w.module != ''
                   AND (
                       LOWER(TRIM(w.module)) = ${userModuleLower}
@@ -1314,6 +1342,9 @@ export async function getRecentActivity(user_id, page = 1, limit = 10) {
             JOIN weeks w ON p.week_id = w.week_id
             WHERE pr.user_id = ${user_id} 
                 AND pr.completed = true
+                AND w.is_active = true
+                AND p.is_active = true
+                AND l.is_active = true
                 AND w.module IS NOT NULL 
                 AND w.module != ''
                 AND (
@@ -1334,6 +1365,8 @@ export async function getRecentActivity(user_id, page = 1, limit = 10) {
             JOIN projects p ON q.project_id = p.project_id
             JOIN weeks w ON p.week_id = w.week_id
             WHERE qs.user_id = ${user_id}
+                AND w.is_active = true
+                AND p.is_active = true
                 AND w.module IS NOT NULL 
                 AND w.module != ''
                 AND (
@@ -1553,8 +1586,9 @@ export async function getMyDashboard(user_id) {
                     COUNT(DISTINCT l.lesson_id) as total_lessons,
                     COUNT(DISTINCT w.week_id) as total_weeks
                 FROM weeks w
-                LEFT JOIN projects p ON w.week_id = p.week_id
-                LEFT JOIN lessons l ON p.project_id = l.project_id
+                LEFT JOIN projects p ON w.week_id = p.week_id AND p.is_active = true
+                LEFT JOIN lessons l ON p.project_id = l.project_id AND l.is_active = true
+                WHERE w.is_active = true
             `
             : await sql`
                 SELECT
@@ -1562,9 +1596,10 @@ export async function getMyDashboard(user_id) {
                     COUNT(DISTINCT l.lesson_id) as total_lessons,
                     COUNT(DISTINCT w.week_id) as total_weeks
                 FROM weeks w
-                LEFT JOIN projects p ON w.week_id = p.week_id
-                LEFT JOIN lessons l ON p.project_id = l.project_id
-                WHERE (
+                LEFT JOIN projects p ON w.week_id = p.week_id AND p.is_active = true
+                LEFT JOIN lessons l ON p.project_id = l.project_id AND l.is_active = true
+                WHERE w.is_active = true
+                  AND (
                     -- Weeks with matching module
                     (w.module IS NOT NULL 
                       AND w.module != ''
@@ -1602,8 +1637,10 @@ export async function getMyDashboard(user_id) {
                 SELECT
                     COUNT(DISTINCT pr.lesson_id) as completed_lessons
                 FROM progress pr
+                JOIN lessons l ON pr.lesson_id = l.lesson_id
                 WHERE pr.user_id = ${user_id} 
                   AND pr.completed = true
+                  AND l.is_active = true
             `
             : await sql`
                 SELECT
@@ -1614,6 +1651,9 @@ export async function getMyDashboard(user_id) {
                 LEFT JOIN weeks w ON p.week_id = w.week_id
                 WHERE pr.user_id = ${user_id} 
                     AND pr.completed = true
+                    AND l.is_active = true
+                    AND p.is_active = true
+                    AND w.is_active = true
                     AND (
                         -- Lesson has direct module match
                         (l.module IS NOT NULL 
@@ -2294,8 +2334,12 @@ export async function getStudentAssignments(userId, projectId = null) {
                         ELSE false 
                     END as has_submitted
                 FROM assignments a
-                WHERE a.is_active = true
-                    AND a.project_id = ${projectId}
+                WHERE COALESCE(a.is_active, true) = true
+                    AND (
+                        (a.project_id = ${projectId})
+                        OR 
+                        (a.lesson_id IS NOT NULL AND EXISTS (SELECT 1 FROM lessons l WHERE l.lesson_id = a.lesson_id AND l.project_id = ${projectId}))
+                    )
                 ORDER BY a.due_date ASC NULLS LAST, a.created_at DESC
             `
             : sql`
@@ -2313,14 +2357,18 @@ export async function getStudentAssignments(userId, projectId = null) {
                         ELSE false 
                     END as has_submitted
                 FROM assignments a
-                WHERE a.is_active = true
+                WHERE COALESCE(a.is_active, true) = true
+                    AND (
+                        (a.project_id = ${projectId})
+                        OR 
+                        (a.lesson_id IS NOT NULL AND EXISTS (SELECT 1 FROM lessons l WHERE l.lesson_id = a.lesson_id AND l.project_id = ${projectId}))
+                    )
                     AND (
                         (a.project_id IS NOT NULL AND EXISTS (
                             SELECT 1 FROM projects p
                             JOIN weeks w ON p.week_id = w.week_id
                             WHERE p.project_id = a.project_id 
                               AND w.module IS NOT NULL 
-                              AND w.module != ''
                               AND (
                                   LOWER(TRIM(w.module)) = ${userModuleLower}
                                   OR LOWER(TRIM(w.module)) = ${normalizedModuleLower}
@@ -2335,7 +2383,6 @@ export async function getStudentAssignments(userId, projectId = null) {
                             JOIN weeks w ON p.week_id = w.week_id
                             WHERE l.lesson_id = a.lesson_id 
                               AND w.module IS NOT NULL 
-                              AND w.module != ''
                               AND (
                                   LOWER(TRIM(w.module)) = ${userModuleLower}
                                   OR LOWER(TRIM(w.module)) = ${normalizedModuleLower}
@@ -2343,11 +2390,6 @@ export async function getStudentAssignments(userId, projectId = null) {
                                   OR w.module = ${normalizedModule}
                               )
                         ))
-                    )
-                    AND (
-                        a.project_id = ${projectId} 
-                        OR 
-                        EXISTS (SELECT 1 FROM lessons l WHERE l.lesson_id = a.lesson_id AND l.project_id = ${projectId})
                     )
                 ORDER BY a.due_date ASC NULLS LAST, a.created_at DESC
             `;
@@ -2368,7 +2410,7 @@ export async function getStudentAssignments(userId, projectId = null) {
                         ELSE false 
                     END as has_submitted
                 FROM assignments a
-                WHERE a.is_active = true
+                WHERE COALESCE(a.is_active, true) = true
                 ORDER BY a.due_date ASC NULLS LAST, a.created_at DESC
             `
             : sql`
@@ -2386,14 +2428,13 @@ export async function getStudentAssignments(userId, projectId = null) {
                         ELSE false 
                     END as has_submitted
                 FROM assignments a
-                WHERE a.is_active = true
+                WHERE COALESCE(a.is_active, true) = true
                     AND (
                         (a.project_id IS NOT NULL AND EXISTS (
                             SELECT 1 FROM projects p
                             JOIN weeks w ON p.week_id = w.week_id
                             WHERE p.project_id = a.project_id 
                               AND w.module IS NOT NULL 
-                              AND w.module != ''
                               AND (
                                   LOWER(TRIM(w.module)) = ${userModuleLower}
                                   OR LOWER(TRIM(w.module)) = ${normalizedModuleLower}
@@ -2408,7 +2449,6 @@ export async function getStudentAssignments(userId, projectId = null) {
                             JOIN weeks w ON p.week_id = w.week_id
                             WHERE l.lesson_id = a.lesson_id 
                               AND w.module IS NOT NULL 
-                              AND w.module != ''
                               AND (
                                   LOWER(TRIM(w.module)) = ${userModuleLower}
                                   OR LOWER(TRIM(w.module)) = ${normalizedModuleLower}
@@ -2461,6 +2501,7 @@ export async function getAssignmentById(assignmentId, userId) {
                 ) as project_title
             FROM assignments a
             WHERE a.assignment_id = ${assignmentId}
+              AND COALESCE(a.is_active, true) = true
           `
           : await sql`
             SELECT 
@@ -2471,12 +2512,14 @@ export async function getAssignmentById(assignmentId, userId) {
                 ) as project_title
             FROM assignments a
             WHERE a.assignment_id = ${assignmentId}
+              AND COALESCE(a.is_active, true) = true
               AND (
                   -- Case 1: Assignment linked to project -> week -> module
                   (a.project_id IS NOT NULL AND EXISTS (
                       SELECT 1 FROM projects p
                       JOIN weeks w ON p.week_id = w.week_id
-                      WHERE p.project_id = a.project_id AND w.module = ${userModule}
+                      WHERE p.project_id = a.project_id 
+                        AND w.module = ${userModule}
                   ))
                   OR
                   -- Case 2: Assignment linked to lesson -> project -> week -> module
@@ -2484,7 +2527,8 @@ export async function getAssignmentById(assignmentId, userId) {
                       SELECT 1 FROM lessons l
                       JOIN projects p ON l.project_id = p.project_id
                       JOIN weeks w ON p.week_id = w.week_id
-                      WHERE l.lesson_id = a.lesson_id AND w.module = ${userModule}
+                      WHERE l.lesson_id = a.lesson_id 
+                        AND w.module = ${userModule}
                   ))
               )
           `;
@@ -2937,7 +2981,8 @@ export async function getAllModuleContent(user_id) {
                     w.module,
                     COUNT(DISTINCT p.project_id) as project_count
                 FROM weeks w
-                LEFT JOIN projects p ON p.week_id = w.week_id
+                LEFT JOIN projects p ON p.week_id = w.week_id AND COALESCE(p.is_active, true) = true
+                WHERE COALESCE(w.is_active, true) = true
                 GROUP BY w.week_id, w.title, w.description, w.order_num, w.module
                 ORDER BY w.order_num NULLS LAST, w.week_id
             ` : sql`
@@ -2949,8 +2994,9 @@ export async function getAllModuleContent(user_id) {
                     w.module,
                     COUNT(DISTINCT p.project_id) as project_count
                 FROM weeks w
-                LEFT JOIN projects p ON p.week_id = w.week_id
-                WHERE w.module IS NOT NULL 
+                LEFT JOIN projects p ON p.week_id = w.week_id AND COALESCE(p.is_active, true) = true
+                WHERE COALESCE(w.is_active, true) = true
+                  AND w.module IS NOT NULL 
                   AND w.module != ''
                   AND (
                       LOWER(TRIM(w.module)) = ${userModuleLower}
@@ -2977,7 +3023,8 @@ export async function getAllModuleContent(user_id) {
                     COUNT(DISTINCT l.lesson_id) as lesson_count
                 FROM projects p
                 LEFT JOIN weeks w ON p.week_id = w.week_id
-                LEFT JOIN lessons l ON l.project_id = p.project_id
+                LEFT JOIN lessons l ON l.project_id = p.project_id AND COALESCE(l.is_active, true) = true
+                WHERE COALESCE(p.is_active, true) = true AND COALESCE(w.is_active, true) = true
                 GROUP BY p.project_id, p.title, p.short_description, p.image_url, p.video_url, p.order_num, p.module, w.week_id, w.title
                 ORDER BY w.order_num NULLS LAST, p.order_num NULLS LAST
             ` : sql`
@@ -2994,8 +3041,9 @@ export async function getAllModuleContent(user_id) {
                     COUNT(DISTINCT l.lesson_id) as lesson_count
                 FROM projects p
                 LEFT JOIN weeks w ON p.week_id = w.week_id
-                LEFT JOIN lessons l ON l.project_id = p.project_id
-                WHERE (
+                LEFT JOIN lessons l ON l.project_id = p.project_id AND COALESCE(l.is_active, true) = true
+                WHERE COALESCE(p.is_active, true) = true AND COALESCE(w.is_active, true) = true
+                  AND (
                     (p.module IS NOT NULL 
                       AND p.module != ''
                       AND (
@@ -3031,16 +3079,14 @@ export async function getAllModuleContent(user_id) {
                 FROM lessons l
                 LEFT JOIN projects p ON l.project_id = p.project_id
                 LEFT JOIN weeks w ON p.week_id = w.week_id
+                WHERE COALESCE(l.is_active, true) = true AND COALESCE(p.is_active, true) = true AND COALESCE(w.is_active, true) = true
                 ORDER BY w.order_num NULLS LAST, p.order_num NULLS LAST, l.order_num NULLS LAST
             ` : sql`
                 SELECT 
                     l.lesson_id,
                     l.title,
                     l.content,
-                  
-                
                     l.order_num,
-            
                     p.project_id,
                     p.title as project_title,
                     w.week_id,
@@ -3048,7 +3094,8 @@ export async function getAllModuleContent(user_id) {
                 FROM lessons l
                 LEFT JOIN projects p ON l.project_id = p.project_id
                 LEFT JOIN weeks w ON p.week_id = w.week_id
-                WHERE (
+                WHERE COALESCE(l.is_active, true) = true AND COALESCE(p.is_active, true) = true AND COALESCE(w.is_active, true) = true
+                  AND (
                     (l.module IS NOT NULL 
                       AND l.module != ''
                       AND (
@@ -3098,6 +3145,7 @@ export async function getAllModuleContent(user_id) {
                 LEFT JOIN lessons l ON q.lesson_id = l.lesson_id
                 LEFT JOIN projects p2 ON l.project_id = p2.project_id
                 LEFT JOIN weeks w ON COALESCE(p.week_id, p2.week_id) = w.week_id
+                WHERE COALESCE(q.is_active, true) = true AND COALESCE(w.is_active, true) = true AND COALESCE(p.is_active, p2.is_active, true) = true AND COALESCE(l.is_active, true) = true
                 ORDER BY q.start_time NULLS LAST, q.quiz_id
             ` : sql`
                 SELECT 
@@ -3119,7 +3167,8 @@ export async function getAllModuleContent(user_id) {
                 LEFT JOIN lessons l ON q.lesson_id = l.lesson_id
                 LEFT JOIN projects p2 ON l.project_id = p2.project_id
                 LEFT JOIN weeks w ON COALESCE(p.week_id, p2.week_id) = w.week_id
-                WHERE (
+                WHERE COALESCE(q.is_active, true) = true AND COALESCE(w.is_active, true) = true AND COALESCE(p.is_active, p2.is_active, true) = true AND COALESCE(l.is_active, true) = true
+                  AND (
                     (q.module IS NOT NULL 
                       AND q.module != ''
                       AND (
@@ -3182,7 +3231,7 @@ export async function getAllModuleContent(user_id) {
                 LEFT JOIN lessons l ON a.lesson_id = l.lesson_id
                 LEFT JOIN projects p2 ON l.project_id = p2.project_id
                 LEFT JOIN weeks w ON COALESCE(p.week_id, p2.week_id) = w.week_id
-                WHERE a.is_active = true
+                WHERE COALESCE(a.is_active, true) = true AND COALESCE(w.is_active, true) = true
                 ORDER BY a.due_date NULLS LAST, a.created_at DESC
             ` : sql`
                 SELECT 
@@ -3209,7 +3258,7 @@ export async function getAllModuleContent(user_id) {
                 LEFT JOIN lessons l ON a.lesson_id = l.lesson_id
                 LEFT JOIN projects p2 ON l.project_id = p2.project_id
                 LEFT JOIN weeks w ON COALESCE(p.week_id, p2.week_id) = w.week_id
-                WHERE a.is_active = true
+                WHERE COALESCE(a.is_active, true) = true AND COALESCE(w.is_active, true) = true
                   AND (
                       (a.module IS NOT NULL 
                         AND a.module != ''

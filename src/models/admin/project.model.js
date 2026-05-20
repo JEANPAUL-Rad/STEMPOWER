@@ -2,10 +2,10 @@ import sql from '../../config/db.js';
 
 // Create a project (assign to week)
 // Create a project with rich content support
-export async function createProject({ title, short_description, image_url, video_url, week_id, order_num }) {
+export async function createProject({ title, short_description, image_url, video_url, week_id, order_num, is_active = true }) {
     const [project] = await sql`
-        INSERT INTO projects (title, short_description, image_url, video_url, week_id, order_num)
-        VALUES (${title}, ${short_description}, ${image_url}, ${video_url}, ${week_id}, ${order_num})
+        INSERT INTO projects (title, short_description, image_url, video_url, week_id, order_num, is_active)
+        VALUES (${title}, ${short_description}, ${image_url}, ${video_url}, ${week_id}, ${order_num}, ${is_active})
         RETURNING *
     `;
     return project;
@@ -40,7 +40,7 @@ export async function getProjectById(project_id) {
 // Update a project
 export async function updateProject(
     project_id,
-    { title, short_description, image_url, video_url, week_id, order_num }
+    { title, short_description, image_url, video_url, week_id, order_num, is_active }
   ) {
       const [project] = await sql`
           UPDATE projects SET
@@ -50,6 +50,7 @@ export async function updateProject(
               video_url = COALESCE(${video_url}, video_url),
               week_id = COALESCE(${week_id}, week_id),
               order_num = COALESCE(${order_num}, order_num),
+              is_active = COALESCE(${is_active}, is_active),
               updated_at = CURRENT_TIMESTAMP
           WHERE project_id = ${project_id}
           RETURNING *

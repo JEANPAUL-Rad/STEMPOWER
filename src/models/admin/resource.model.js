@@ -48,10 +48,10 @@
 import sql from '../../config/db.js';
 
 // Create Resource (files are stored separately in resource_files)
-export async function createResource({ type, title, content, module, is_public, week_id = null }) {
+export async function createResource({ type, title, content, module, is_public, week_id = null, is_active = true }) {
   const [resource] = await sql`
-    INSERT INTO resources (type, title, content, module, is_public, week_id, created_at)
-    VALUES (${type}, ${title}, ${content}, ${module}, ${is_public}, ${week_id}, NOW())
+    INSERT INTO resources (type, title, content, module, is_public, week_id, is_active, created_at)
+    VALUES (${type}, ${title}, ${content}, ${module}, ${is_public}, ${week_id}, ${is_active}, NOW())
     RETURNING *;
   `;
   return resource;
@@ -157,7 +157,7 @@ export async function getResourceById(resource_id) {
 }
 
 // Update Resource
-export async function updateResource(resource_id, { type, title, content, module, is_public, week_id = null }) {
+export async function updateResource(resource_id, { type, title, content, module, is_public, week_id = null, is_active }) {
   const [resource] = await sql`
     UPDATE resources SET 
       type = COALESCE(${type}, type),
@@ -165,7 +165,8 @@ export async function updateResource(resource_id, { type, title, content, module
       content = COALESCE(${content}, content),
       module = COALESCE(${module}, module),
       is_public = COALESCE(${is_public}, is_public),
-      week_id = COALESCE(${week_id}, week_id)
+      week_id = COALESCE(${week_id}, week_id),
+      is_active = COALESCE(${is_active}, is_active)
     WHERE resource_id = ${resource_id} 
     RETURNING *;
   `;

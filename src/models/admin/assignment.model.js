@@ -13,18 +13,19 @@ export const createAssignment = async (assignmentData) => {
       max_file_size_mb,
       allowed_file_types,
       due_date,
-      created_by
+      created_by,
+      is_active = true
     } = assignmentData;
 
     const result = await sql`
       INSERT INTO assignments (
         project_id, lesson_id, module, title, description,
         max_file_size_mb, allowed_file_types,
-        due_date, created_by, created_at, updated_at
+        due_date, created_by, created_at, updated_at, is_active
       ) VALUES (
         ${project_id}, ${lesson_id}, ${module}, ${title}, ${description},
         ${max_file_size_mb}, ${allowed_file_types}, ${due_date}, ${created_by},
-        ${createDBTimestamp()}, ${createDBTimestamp()}
+        ${createDBTimestamp()}, ${createDBTimestamp()}, ${is_active}
       ) RETURNING *
     `;
 
@@ -61,7 +62,6 @@ export const getAllAssignments = async ({ limit = 50, offset = 0 } = {}) => {
       LEFT JOIN projects p ON a.project_id = p.project_id
       LEFT JOIN lessons l ON a.lesson_id = l.lesson_id
       LEFT JOIN users u ON a.created_by = u.user_id
-      WHERE a.is_active = true
       ORDER BY a.created_at DESC
       LIMIT ${limit} OFFSET ${offset}
     `;
@@ -208,12 +208,35 @@ export const updateAssignment = async (assignmentId, updateData) => {
 // Delete assignment
 export const deleteAssignment = async (assignmentId) => {
   try {
-    await sql`
-      UPDATE assignments SET 
-        is_active = false,
-        updated_at = ${createDBTimestamp()}
-      WHERE assignment_id = ${assignmentId}
-    `;
+    await sql.begin(async (trx) => {
+      // Remove any assignment files and related submission files first
+      await trx`
+        DELETE FROM assignment_submission_files
+        WHERE submission_id IN (
+          SELECT submission_id FROM assignment_submissions WHERE assignment_id = ${assignmentId}
+        )
+      `;
+
+      await trx`
+        DELETE FROM assignment_submissions
+        WHERE assignment_id = ${assignmentId}
+      `;
+
+      await trx`
+        DELETE FROM assignment_downloads
+        WHERE assignment_id = ${assignmentId}
+      `;
+
+      await trx`
+        DELETE FROM assignment_files
+        WHERE assignment_id = ${assignmentId}
+      `;
+
+      await trx`
+        DELETE FROM assignments
+        WHERE assignment_id = ${assignmentId}
+      `;
+    });
     return true;
   } catch (error) {
     console.error('Error deleting assignment:', error);
