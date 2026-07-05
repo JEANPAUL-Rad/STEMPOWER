@@ -66,10 +66,11 @@ export const getAllAssignments = async ({ limit = 50, offset = 0 } = {}) => {
       LIMIT ${limit} OFFSET ${offset}
     `;
 
-    // Get submission counts separately in a single query (much faster than GROUP BY)
+    // Get submission counts, download counts, and files separately
     const assignmentIds = result.map(a => a.assignment_id);
     let submissionCounts = {};
     let downloadCounts = {};
+    let assignmentFiles = {};
     
     if (assignmentIds.length > 0) {
       // Single query for all submission counts
@@ -97,12 +98,38 @@ export const getAllAssignments = async ({ limit = 50, offset = 0 } = {}) => {
       downloadCounts = Object.fromEntries(
         dlCounts.map(dc => [dc.assignment_id, Number(dc.download_count)])
       );
+
+      // Single query for all assignment files
+      const files = await sql`
+        SELECT 
+          file_id,
+          assignment_id,
+          file_url,
+          file_name,
+          file_size_bytes,
+          uploaded_at
+        FROM assignment_files
+        WHERE assignment_id = ANY(${assignmentIds})
+        ORDER BY assignment_id, uploaded_at
+      `;
+      
+      assignmentFiles = {};
+      files.forEach(file => {
+        if (!assignmentFiles[file.assignment_id]) {
+          assignmentFiles[file.assignment_id] = [];
+        }
+        assignmentFiles[file.assignment_id].push({
+          ...file,
+          uploaded_at_cat: parseDBTimestamp(file.uploaded_at)
+        });
+      });
     }
 
     return result.map(assignment => ({
       ...assignment,
       submission_count: submissionCounts[assignment.assignment_id] || 0,
       download_count: downloadCounts[assignment.assignment_id] || 0,
+      files: assignmentFiles[assignment.assignment_id] || [],
       due_date_cat: parseDBTimestamp(assignment.due_date),
       created_at_cat: parseDBTimestamp(assignment.created_at)
     }));
@@ -181,7 +208,8 @@ export const updateAssignment = async (assignmentId, updateData) => {
       allowed_file_types = null,
       due_date = null,
       is_active = null,
-      
+      project_id = null,
+      lesson_id = null,
     } = updateData || {};
 
     const result = await sql`
@@ -193,6 +221,8 @@ export const updateAssignment = async (assignmentId, updateData) => {
         allowed_file_types = COALESCE(${allowed_file_types}, allowed_file_types),
         due_date = COALESCE(${due_date}, due_date),
         is_active = COALESCE(${is_active}, is_active),
+        project_id = COALESCE(${project_id}, project_id),
+        lesson_id = COALESCE(${lesson_id}, lesson_id),
         updated_at = ${createDBTimestamp()}
       WHERE assignment_id = ${assignmentId}
       RETURNING *

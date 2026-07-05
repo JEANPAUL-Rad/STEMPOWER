@@ -1566,16 +1566,6 @@ export async function getMyDashboard(user_id) {
         const userModuleLower = (userModule || '').toLowerCase().trim();
         const normalizedModuleLower = (normalizedModule || '').toLowerCase().trim();
         
-        // Debug: Check what modules exist in weeks table
-        const availableModules = await sql`
-            SELECT DISTINCT module, COUNT(*) as count 
-            FROM weeks 
-            WHERE module IS NOT NULL AND module != ''
-            GROUP BY module
-            LIMIT 10
-        `;
-        console.log(`🔍 Available modules in weeks table:`, availableModules.map(m => `${m.module} (${m.count} weeks)`));
-        
         // Fetch stats
         // For normal modules, restrict to that module.
         // For MEP, aggregate across all modules (super-access).
@@ -1846,336 +1836,44 @@ export async function getMyDashboard(user_id) {
             ? Math.round((statsResult.completed_lessons / statsResult.total_lessons) * 100)
             : 0;
 
-        // Get module statistics for each enrolled/registered module
-        const modulesWithStats = await Promise.all(
-            enrolledModulesDetails.map(async (module) => {
-                try {
-                    // Get the module name (prioritize registration module, then enrollment module)
-                    const moduleName = module.registration_module || module.module || module.module_title;
-                    
-                    if (!moduleName) {
-                        console.warn(`⚠️ No module name found for enrollment details:`, module);
-                        return null;
-                    }
-                    
-                    const normalizedModuleName = normalizeModule(moduleName);
-                    
-                    // Simple module matching (case-insensitive)
-                    const moduleNameLower = (moduleName || '').toLowerCase().trim();
-                    const normalizedModuleNameLower = (normalizedModuleName || '').toLowerCase().trim();
-                    
-                    console.log(`📊 Fetching stats for module: "${moduleName}" (normalized: "${normalizedModuleName}")`);
-                    
-                    // Enhanced query to get all content counts for the module
-                    // Split into separate queries for better accuracy
-                    const [weekStats, projectStats, lessonStats, quizStats, assignmentStats, resourceStats] = await Promise.all([
-                        // Weeks count
-                        sql`
-                            SELECT COUNT(DISTINCT week_id) as total_weeks
-                            FROM weeks
-                            WHERE module IS NOT NULL 
-                              AND module != ''
-                              AND (
-                                  LOWER(TRIM(module)) = ${moduleNameLower}
-                                  OR LOWER(TRIM(module)) = ${normalizedModuleNameLower}
-                                  OR module = ${moduleName}
-                                  OR module = ${normalizedModuleName}
-                              )
-                        `,
-                        // Projects count - check both direct module and weeks.module
-                        sql`
-                            SELECT COUNT(DISTINCT p.project_id) as total_projects
-                            FROM projects p
-                            LEFT JOIN weeks w ON p.week_id = w.week_id
-                            WHERE (
-                                -- Project has direct module match
-                                (p.module IS NOT NULL 
-                                  AND p.module != ''
-                                  AND (
-                                      LOWER(TRIM(p.module)) = ${moduleNameLower}
-                                      OR LOWER(TRIM(p.module)) = ${normalizedModuleNameLower}
-                                      OR p.module = ${moduleName}
-                                      OR p.module = ${normalizedModuleName}
-                                  ))
-                                -- OR project's week has module match
-                                OR (w.module IS NOT NULL 
-                                  AND w.module != ''
-                                  AND (
-                                      LOWER(TRIM(w.module)) = ${moduleNameLower}
-                                      OR LOWER(TRIM(w.module)) = ${normalizedModuleNameLower}
-                                      OR w.module = ${moduleName}
-                                      OR w.module = ${normalizedModuleName}
-                                  ))
-                            )
-                        `,
-                        // Lessons count - check lesson.module, project.module, and week.module
-                        sql`
-                            SELECT COUNT(DISTINCT l.lesson_id) as total_lessons
-                            FROM lessons l
-                            LEFT JOIN projects p ON l.project_id = p.project_id
-                            LEFT JOIN weeks w ON p.week_id = w.week_id
-                            WHERE (
-                                -- Lesson has direct module match
-                                (l.module IS NOT NULL 
-                                  AND l.module != ''
-                                  AND (
-                                      LOWER(TRIM(l.module)) = ${moduleNameLower}
-                                      OR LOWER(TRIM(l.module)) = ${normalizedModuleNameLower}
-                                      OR l.module = ${moduleName}
-                                      OR l.module = ${normalizedModuleName}
-                                  ))
-                                -- OR lesson's project has module match
-                                OR (p.module IS NOT NULL 
-                                  AND p.module != ''
-                                  AND (
-                                      LOWER(TRIM(p.module)) = ${moduleNameLower}
-                                      OR LOWER(TRIM(p.module)) = ${normalizedModuleNameLower}
-                                      OR p.module = ${moduleName}
-                                      OR p.module = ${normalizedModuleName}
-                                  ))
-                                -- OR lesson's week has module match
-                                OR (w.module IS NOT NULL 
-                                  AND w.module != ''
-                                  AND (
-                                      LOWER(TRIM(w.module)) = ${moduleNameLower}
-                                      OR LOWER(TRIM(w.module)) = ${normalizedModuleNameLower}
-                                      OR w.module = ${moduleName}
-                                      OR w.module = ${normalizedModuleName}
-                                  ))
-                            )
-                        `,
-                        // Quizzes count - check quiz.module directly plus relationships
-                        sql`
-                            SELECT COUNT(DISTINCT q.quiz_id) as total_quizzes
-                            FROM quizzes q
-                            LEFT JOIN projects p ON q.project_id = p.project_id
-                            LEFT JOIN lessons l ON q.lesson_id = l.lesson_id
-                            LEFT JOIN projects p2 ON l.project_id = p2.project_id
-                            LEFT JOIN weeks w ON COALESCE(p.week_id, p2.week_id) = w.week_id
-                            WHERE (
-                                -- Quiz has direct module match
-                                (q.module IS NOT NULL 
-                                  AND q.module != ''
-                                  AND (
-                                      LOWER(TRIM(q.module)) = ${moduleNameLower}
-                                      OR LOWER(TRIM(q.module)) = ${normalizedModuleNameLower}
-                                      OR q.module = ${moduleName}
-                                      OR q.module = ${normalizedModuleName}
-                                  ))
-                                -- OR quiz's project has module match
-                                OR (p.module IS NOT NULL 
-                                  AND p.module != ''
-                                  AND (
-                                      LOWER(TRIM(p.module)) = ${moduleNameLower}
-                                      OR LOWER(TRIM(p.module)) = ${normalizedModuleNameLower}
-                                      OR p.module = ${moduleName}
-                                      OR p.module = ${normalizedModuleName}
-                                  ))
-                                -- OR quiz's lesson has module match
-                                OR (l.module IS NOT NULL 
-                                  AND l.module != ''
-                                  AND (
-                                      LOWER(TRIM(l.module)) = ${moduleNameLower}
-                                      OR LOWER(TRIM(l.module)) = ${normalizedModuleNameLower}
-                                      OR l.module = ${moduleName}
-                                      OR l.module = ${normalizedModuleName}
-                                  ))
-                                -- OR quiz's lesson's project has module match
-                                OR (p2.module IS NOT NULL 
-                                  AND p2.module != ''
-                                  AND (
-                                      LOWER(TRIM(p2.module)) = ${moduleNameLower}
-                                      OR LOWER(TRIM(p2.module)) = ${normalizedModuleNameLower}
-                                      OR p2.module = ${moduleName}
-                                      OR p2.module = ${normalizedModuleName}
-                                  ))
-                                -- OR quiz's week has module match
-                                OR (w.module IS NOT NULL 
-                                  AND w.module != ''
-                                  AND (
-                                      LOWER(TRIM(w.module)) = ${moduleNameLower}
-                                      OR LOWER(TRIM(w.module)) = ${normalizedModuleNameLower}
-                                      OR w.module = ${moduleName}
-                                      OR w.module = ${normalizedModuleName}
-                                  ))
-                            )
-                        `,
-                        // Assignments count - check assignment.module directly plus relationships
-                        sql`
-                            SELECT COUNT(DISTINCT a.assignment_id) as total_assignments
-                            FROM assignments a
-                            LEFT JOIN projects p ON a.project_id = p.project_id
-                            LEFT JOIN lessons l ON a.lesson_id = l.lesson_id
-                            LEFT JOIN projects p2 ON l.project_id = p2.project_id
-                            LEFT JOIN weeks w ON COALESCE(p.week_id, p2.week_id) = w.week_id
-                            WHERE a.is_active = true
-                              AND (
-                                  -- Assignment has direct module match
-                                  (a.module IS NOT NULL 
-                                    AND a.module != ''
-                                    AND (
-                                        LOWER(TRIM(a.module)) = ${moduleNameLower}
-                                        OR LOWER(TRIM(a.module)) = ${normalizedModuleNameLower}
-                                        OR a.module = ${moduleName}
-                                        OR a.module = ${normalizedModuleName}
-                                    ))
-                                  -- OR assignment's project has module match
-                                  OR (p.module IS NOT NULL 
-                                    AND p.module != ''
-                                    AND (
-                                        LOWER(TRIM(p.module)) = ${moduleNameLower}
-                                        OR LOWER(TRIM(p.module)) = ${normalizedModuleNameLower}
-                                        OR p.module = ${moduleName}
-                                        OR p.module = ${normalizedModuleName}
-                                    ))
-                                  -- OR assignment's lesson has module match
-                                  OR (l.module IS NOT NULL 
-                                    AND l.module != ''
-                                    AND (
-                                        LOWER(TRIM(l.module)) = ${moduleNameLower}
-                                        OR LOWER(TRIM(l.module)) = ${normalizedModuleNameLower}
-                                        OR l.module = ${moduleName}
-                                        OR l.module = ${normalizedModuleName}
-                                    ))
-                                  -- OR assignment's lesson's project has module match
-                                  OR (p2.module IS NOT NULL 
-                                    AND p2.module != ''
-                                    AND (
-                                        LOWER(TRIM(p2.module)) = ${moduleNameLower}
-                                        OR LOWER(TRIM(p2.module)) = ${normalizedModuleNameLower}
-                                        OR p2.module = ${moduleName}
-                                        OR p2.module = ${normalizedModuleName}
-                                    ))
-                                  -- OR assignment's week has module match
-                                  OR (w.module IS NOT NULL 
-                                    AND w.module != ''
-                                    AND (
-                                        LOWER(TRIM(w.module)) = ${moduleNameLower}
-                                        OR LOWER(TRIM(w.module)) = ${normalizedModuleNameLower}
-                                        OR w.module = ${moduleName}
-                                        OR w.module = ${normalizedModuleName}
-                                    ))
-                              )
-                        `,
-                        // Resources count (direct module link)
-                        sql`
-                            SELECT COUNT(DISTINCT resource_id) as total_resources
-                            FROM resources
-                            WHERE module IS NOT NULL 
-                              AND module != ''
-                              AND (
-                                  LOWER(TRIM(module)) = ${moduleNameLower}
-                                  OR LOWER(TRIM(module)) = ${normalizedModuleNameLower}
-                                  OR module = ${moduleName}
-                                  OR module = ${normalizedModuleName}
-                              )
-                        `
-                    ]);
-                    
-                    const moduleStats = [{
-                        total_weeks: parseInt(weekStats[0]?.total_weeks || 0),
-                        total_projects: parseInt(projectStats[0]?.total_projects || 0),
-                        total_lessons: parseInt(lessonStats[0]?.total_lessons || 0),
-                        total_quizzes: parseInt(quizStats[0]?.total_quizzes || 0),
-                        total_assignments: parseInt(assignmentStats[0]?.total_assignments || 0),
-                        total_resources: parseInt(resourceStats[0]?.total_resources || 0)
-                    }];
-                    
-                    console.log(`📊 Stats for "${moduleName}":`, {
-                        weeks: moduleStats[0]?.total_weeks || 0,
-                        projects: moduleStats[0]?.total_projects || 0,
-                        lessons: moduleStats[0]?.total_lessons || 0,
-                        quizzes: moduleStats[0]?.total_quizzes || 0,
-                        assignments: moduleStats[0]?.total_assignments || 0,
-                        resources: moduleStats[0]?.total_resources || 0
-                    });
-                    
-                    // If all stats are 0, log warning
-                    if (moduleStats[0]?.total_weeks === 0 && moduleStats[0]?.total_projects === 0) {
-                        console.warn(`⚠️ WARNING: Module "${moduleName}" has no content!`);
-                        console.warn(`   This usually means weeks don't have this module assigned.`);
-                        console.warn(`   Check weeks table: SELECT * FROM weeks WHERE module = '${moduleName}';`);
-                    }
-                    
-                    // Normalize module name to exact values
-                    let moduleTitle = module.module_title || module.module || moduleName;
-                    const moduleLower = moduleTitle?.toLowerCase() || '';
-                    
-                    if (moduleLower.includes('electrical')) {
-                        moduleTitle = 'Electrical Design';
-                    } else if (moduleLower.includes('plumbing') || moduleLower.includes('mechanical') || moduleLower.includes('hvac')) {
-                        moduleTitle = 'Plumbing & Mechanical Design (HVAC)';
-                    } else if (moduleLower.includes('mep')) {
-                        moduleTitle = 'MEP Design';
-                    }
-                    
-                    return {
-                        module: moduleName, // Keep original for queries
-                        module_title: moduleTitle, // Normalized for display
-                        enrolled_at: module.enrolled_at,
-                        enrollment_status: module.status || (module.payment_status === 'Paid' ? 'active' : 'pending'),
-                        payment_status: module.payment_status || 'Pending',
-                        payment_amount: module.payment_amount || 0,
-                        registration_id: module.registration_id || null,
-                        module_stats: {
-                            total_weeks: parseInt(moduleStats[0]?.total_weeks || 0),
-                            total_projects: parseInt(moduleStats[0]?.total_projects || 0),
-                            total_lessons: parseInt(moduleStats[0]?.total_lessons || 0),
-                            total_quizzes: parseInt(moduleStats[0]?.total_quizzes || 0),
-                            total_assignments: parseInt(moduleStats[0]?.total_assignments || 0),
-                            total_resources: parseInt(moduleStats[0]?.total_resources || 0)
-                        }
-                    };
-                } catch (error) {
-                    const moduleName = module.module || module.module_title;
-                    console.error(`Error fetching stats for module ${moduleName}:`, error);
-                    
-                    // Normalize module name even on error
-                    let moduleTitle = module.module_title || module.module || moduleName || '';
-                    const moduleLower = moduleTitle?.toLowerCase() || '';
-                    
-                    if (moduleLower.includes('electrical')) {
-                        moduleTitle = 'Electrical Design';
-                    } else if (moduleLower.includes('plumbing') || moduleLower.includes('mechanical') || moduleLower.includes('hvac')) {
-                        moduleTitle = 'Plumbing & Mechanical Design (HVAC)';
-                    } else if (moduleLower.includes('mep')) {
-                        moduleTitle = 'MEP Design';
-                    }
-                    
-                    return {
-                        module: moduleName,
-                        module_title: moduleTitle,
-                        enrolled_at: module.enrolled_at,
-                        enrollment_status: module.status || (module.payment_status === 'Paid' ? 'active' : 'pending'),
-                        payment_status: module.payment_status || 'Pending',
-                        payment_amount: module.payment_amount || 0,
-                        registration_id: module.registration_id || null,
-                        module_stats: {
-                            total_weeks: 0,
-                            total_projects: 0,
-                            total_lessons: 0,
-                            total_quizzes: 0,
-                            total_assignments: 0,
-                            total_resources: 0
-                        }
-                    };
-                }
-            })
-        );
+        // Get module information without heavy stats queries (frontend only uses basic info)
+        const modulesWithStats = enrolledModulesDetails.map((module) => {
+            // Get the module name (prioritize registration module, then enrollment module)
+            const moduleName = module.registration_module || module.module || module.module_title;
+            
+            if (!moduleName) {
+                console.warn(`⚠️ No module name found for enrollment details:`, module);
+                return null;
+            }
+            
+            // Normalize module name to exact values
+            let moduleTitle = module.module_title || module.module || moduleName;
+            const moduleLower = moduleTitle?.toLowerCase() || '';
+            
+            if (moduleLower.includes('electrical')) {
+                moduleTitle = 'Electrical Design';
+            } else if (moduleLower.includes('plumbing') || moduleLower.includes('mechanical') || moduleLower.includes('hvac')) {
+                moduleTitle = 'Plumbing & Mechanical Design (HVAC)';
+            } else if (moduleLower.includes('mep')) {
+                moduleTitle = 'MEP Design';
+            }
+            
+            return {
+                module: moduleName, // Keep original for queries
+                module_title: moduleTitle, // Normalized for display
+                enrolled_at: module.enrolled_at,
+                enrollment_status: module.status || (module.payment_status === 'Paid' ? 'active' : 'pending'),
+                payment_status: module.payment_status || 'Pending',
+                payment_amount: module.payment_amount || 0,
+                registration_id: module.registration_id || null
+            };
+        }).filter(Boolean);
 
-        // Filter out null values from modulesWithStats
-        const validModules = modulesWithStats.filter(m => m !== null);
-        
         console.log(`✅ Dashboard data prepared:`);
         console.log(`   - Stats:`, statsResult);
         console.log(`   - Current progress:`, currentProgress[0] ? 'Found' : 'None');
         console.log(`   - Recent activity: ${recentActivity.length} items`);
-        console.log(`   - Enrolled modules: ${validModules.length} module(s)`);
-        if (validModules.length > 0) {
-            validModules.forEach(m => {
-                console.log(`     * ${m.module_title}: ${m.module_stats?.total_weeks || 0} weeks, ${m.module_stats?.total_projects || 0} projects, ${m.module_stats?.total_lessons || 0} lessons`);
-            });
-        }
+        console.log(`   - Enrolled modules: ${modulesWithStats.length} module(s)`);
 
         return {
             stats: {
@@ -2184,7 +1882,7 @@ export async function getMyDashboard(user_id) {
             },
             current_progress: currentProgress[0] || null,
             recent_activity: recentActivity,
-            enrolled_modules: validModules
+            enrolled_modules: modulesWithStats
         };
     } catch (error) {
         console.error('Error in getMyDashboard:', error);

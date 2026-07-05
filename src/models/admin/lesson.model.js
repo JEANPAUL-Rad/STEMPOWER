@@ -28,7 +28,8 @@ export async function createLesson({
 export async function getAllLessons({ project_id = null } = {}) {
   const projectFilter = project_id ? sql`AND l.project_id = ${project_id}` : sql``;
 
-  const lessons = await sql`
+  // First get all lessons (including sublessons) with their files
+  const allLessons = await sql`
     SELECT
       l.*,
       COALESCE(w.title, w2.title) AS week_title,
@@ -72,11 +73,13 @@ export async function getAllLessons({ project_id = null } = {}) {
       FROM lesson_files lf
       WHERE lf.lesson_id = l.lesson_id
     ) AS file_data ON TRUE
-    WHERE l.parent_lesson_id IS NULL
+    WHERE 1=1
     ${projectFilter}
-    ORDER BY l.order_num ASC NULLS FIRST, l.created_at ASC
+    ORDER BY l.parent_lesson_id ASC NULLS FIRST, l.order_num ASC NULLS FIRST, l.created_at ASC
   `;
-  return lessons.map(({ 
+
+  // Process each lesson with the files
+  const processedLessons = allLessons.map(({ 
     files_json, 
     primary_file_url, 
     primary_image_url, 
@@ -91,6 +94,15 @@ export async function getAllLessons({ project_id = null } = {}) {
     files: files_json,
     lesson_files: files_json
   }));
+
+  // Build parent lessons (parent_lesson_id IS NULL)
+  const parentLessons = processedLessons.filter(l => !l.parent_lesson_id);
+  
+  // Create a map of lesson id to lesson for easy lookup
+  const lessonMap = new Map(processedLessons.map(l => [l.lesson_id, l]));
+  
+  // For each parent lesson, check for sublessons and add them? Wait, the frontend is handling sublessons in renderLessonRow, but let's return all processed lessons!
+  return processedLessons;
 }
 
 // Get lesson by id (include sublessons)
