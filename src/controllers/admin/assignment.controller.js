@@ -133,6 +133,25 @@ export const getAssignmentById = async (req, res) => {
   }
 };
 
+// Get assignments by week
+export const getAssignmentsByWeek = async (req, res) => {
+  try {
+    const { week_id } = req.params;
+    const assignments = await AssignmentModel.getAssignmentsByWeek(week_id);
+    
+    res.json({
+      success: true,
+      data: assignments
+    });
+  } catch (error) {
+    console.error('Error fetching assignments by week:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch assignments by week'
+    });
+  }
+};
+
 
 
 // Update assignment

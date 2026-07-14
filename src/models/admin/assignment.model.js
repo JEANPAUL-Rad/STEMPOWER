@@ -14,7 +14,8 @@ export const createAssignment = async (assignmentData) => {
       allowed_file_types,
       due_date,
       created_by,
-      is_active = true
+      is_active = true,
+      week_id // Ignored - assignments are linked to projects, not weeks directly
     } = assignmentData;
 
     const result = await sql`
@@ -193,6 +194,40 @@ export const getAssignmentsByProject = async (projectId) => {
     }));
   } catch (error) {
     console.error('Error getting assignments by project:', error);
+    throw error;
+  }
+};
+
+// Get assignments by week
+export const getAssignmentsByWeek = async (weekId) => {
+  try {
+    const result = await sql`
+      SELECT 
+        a.*,
+        p.title as project_title,
+        p.week_id,
+        w.title as week_title,
+        l.title as lesson_title,
+        u.name as created_by_name,
+        COUNT(DISTINCT as_sub.user_id) as submission_count
+      FROM assignments a
+      LEFT JOIN projects p ON a.project_id = p.project_id
+      LEFT JOIN weeks w ON p.week_id = w.week_id
+      LEFT JOIN lessons l ON a.lesson_id = l.lesson_id
+      LEFT JOIN users u ON a.created_by = u.user_id
+      LEFT JOIN assignment_submissions as_sub ON a.assignment_id = as_sub.assignment_id
+      WHERE p.week_id = ${weekId} AND a.is_active = true
+      GROUP BY a.assignment_id, p.title, p.week_id, w.title, l.title, u.name
+      ORDER BY a.created_at DESC
+    `;
+
+    return result.map(assignment => ({
+      ...assignment,
+      due_date_cat: parseDBTimestamp(assignment.due_date),
+      created_at_cat: parseDBTimestamp(assignment.created_at)
+    }));
+  } catch (error) {
+    console.error('Error getting assignments by week:', error);
     throw error;
   }
 };

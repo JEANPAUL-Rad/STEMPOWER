@@ -81,19 +81,20 @@ import adminLessonRoutes from './routes/admin/lesson.routes.js';
 import adminLiveSessionRoutes from './routes/admin/live_session.routes.js';
 import adminProgressRoutes from './routes/admin/progress.routes.js';
 import adminProjectRoutes from './routes/admin/project.routes.js';
+import { adminRouter as adminPublicationRoutes, publicRouter as publicPublicationRoutes } from './routes/admin/publication.routes.js';
 import adminQuizRoutes from './routes/admin/quiz.routes.js';
 import adminQuizQuestionRoutes from './routes/admin/quiz_question.routes.js';
 import adminQuizSubmissionRoutes from './routes/admin/quiz_submission.routes.js';
 import adminResourceRoutes from './routes/admin/resource.routes.js';
 import submissionAnswerRoutes from './routes/admin/submission_answer.routes.js';
 import adminWeekRoutes from './routes/admin/week.routes.js';
+import advertisementRoutes from './routes/advertisement.routes.js';
+import announcementRoutes from './routes/announcement.routes.js';
+import negProtoforialRoutes from './routes/negprotoforial.routes.js';
 import protoforialRoutes from './routes/protoforial.routes.js';
 import registerRoutes from './routes/register.routes.js';
 import studentRoutes from './routes/student.routes.js';
 import userRoutes from './routes/user.routes.js';
-import announcementRoutes from './routes/announcement.routes.js';
-import advertisementRoutes from './routes/advertisement.routes.js';
-import negProtoforialRoutes from './routes/negprotoforial.routes.js';
 
 // Download routes
 app.get('/api/download/question-file/:quizId/:questionId', async (req, res) => {
@@ -236,6 +237,8 @@ app.use('/api/advertisements', advertisementRoutes);
 // Public contacts endpoint (same controller) to ensure availability outside admin namespace
 app.use('/api/contacts', contactRoutes);
 app.use('/api/v1/admin', adminAssignmentRoutes);
+app.use('/api/v1/admin', adminPublicationRoutes);
+app.use('/api/publications', publicPublicationRoutes);
 app.use('/api/negprotoforial', negProtoforialRoutes);
 
 // Fallback route

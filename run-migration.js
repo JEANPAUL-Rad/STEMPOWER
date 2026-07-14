@@ -1,7 +1,7 @@
-import postgres from 'postgres';
-import fs from 'fs';
 import dotenv from 'dotenv';
+import fs from 'fs';
 import path from 'path';
+import postgres from 'postgres';
 
 dotenv.config();
 
@@ -18,7 +18,7 @@ const sql = postgres(connectionString, {
 
 async function runMigration() {
   try {
-    const migrationPath = path.resolve('migrations', '020_add_is_active_columns.sql');
+    const migrationPath = path.resolve('migrations', '022_add_publication_files_table.sql');
     console.log(`📂 Reading migration from ${migrationPath}...`);
     const migrationSql = fs.readFileSync(migrationPath, 'utf8');
     

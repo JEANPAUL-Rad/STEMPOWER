@@ -53,27 +53,9 @@ export async function startAutoBlockJob() {
           RETURNING u.user_id
         `;
         
-        const result4 = await sql`
-          UPDATE register r
-          SET payment_status = 'Unpaid'
-          WHERE r.payment_status = 'Paid'
-            AND (COALESCE(r.updated_at, r.created_at) + INTERVAL '30 days' < NOW())
-            AND NOT EXISTS (
-              SELECT 1 FROM register r2
-              WHERE (r2.user_id = r.user_id OR r2.email_address = r.email_address)
-                AND r2.payment_status = 'Paid'
-                AND (COALESCE(r2.updated_at, r2.created_at) + INTERVAL '30 days' >= NOW())
-            )
-          RETURNING r.id
-        `;
-        
         const totalBlocked = (result1?.length || 0) + (result2?.length || 0) + (result3?.length || 0);
         if (totalBlocked > 0) {
           console.log(`🔒 Auto-blocked ${totalBlocked} user(s) for non-payment.`);
-        }
-        const totalUnpaid = result4?.length || 0;
-        if (totalUnpaid > 0) {
-          console.log(`💳 Marked ${totalUnpaid} registration(s) as Unpaid after 30 days.`);
         }
       } catch (err) {
         console.error('Auto-block job failed:', err);

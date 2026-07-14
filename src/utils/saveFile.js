@@ -79,6 +79,10 @@ export const saveResourceFile = async (file) => {
   return await uploadToFolder(file, 'resources');
 };
 
+export const savePublicationFile = async (file) => {
+  return await uploadToFolder(file, 'publications');
+};
+
 // Reusable function to upload to specific folder
 const uploadToFolder = async (file, folder) => {
   if (!file || !file.buffer) {

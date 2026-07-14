@@ -13,6 +13,7 @@ router.use(authenticate);
 
 // Assignment management routes
 router.get('/assignments', assignmentController.getAllAssignments);
+router.get('/assignments/week/:week_id', assignmentController.getAssignmentsByWeek);
 router.get('/assignments/:assignment_id', assignmentController.getAssignmentById);
 router.post('/assignments', uploadAssignment, assignmentController.createAssignment);
 router.put('/assignments/:assignment_id', uploadAssignment, assignmentController.updateAssignment);
