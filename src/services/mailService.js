@@ -81,7 +81,7 @@ export const sendTemporaryPasswordEmail = async ({ email, name, tempPassword }) 
     <p>Hello ${name || ''},</p>
     <p>We generated a temporary password for your  account:</p>
     <p><strong style="font-size: 18px;">${tempPassword}</strong></p>
-    <p>Please sign in using this password and then change it from your profile settings.</p>
+    <p>Please sign in using thisTemporary Password and then change it from your profile settings.</p>
   `;
   await sendMail(email, 'Your Temporary  Password', html);
 };
