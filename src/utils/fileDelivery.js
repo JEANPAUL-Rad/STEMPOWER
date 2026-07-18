@@ -154,14 +154,29 @@ const streamRemote = async (res, url, downloadName, maxRedirects = 3, options = 
   return new Promise((resolve, reject) => {
     const doRequest = (currentUrl, redirectsLeft) => {
       const protocol = currentUrl.startsWith('https') ? https : http;
+      const urlObj = new URL(currentUrl);
       
-      protocol.get(currentUrl, (response) => {
+      const requestOptions = {
+        hostname: urlObj.hostname,
+        port: urlObj.port || (currentUrl.startsWith('https') ? 443 : 80),
+        path: urlObj.pathname + urlObj.search,
+        method: 'GET',
+        timeout: 30000, // 30 second timeout for production
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; STEMPOWER/1.0)',
+        }
+      };
+      
+      console.log(`[streamRemote] Requesting: ${currentUrl}`);
+      
+      const req = protocol.request(requestOptions, (response) => {
         // Handle redirects
         if ([301, 302, 307, 308].includes(response.statusCode) && redirectsLeft > 0) {
           const location = response.headers.location;
           if (!location) {
             return reject(new Error('Redirect with no Location header'));
           }
+          console.log(`[streamRemote] Redirecting to: ${location}`);
           return doRequest(location, redirectsLeft - 1);
         }
 
@@ -169,8 +184,11 @@ const streamRemote = async (res, url, downloadName, maxRedirects = 3, options = 
         if (response.statusCode !== 200) {
           const err = new Error(`Request failed with status ${response.statusCode}`);
           err.statusCode = response.statusCode;
+          console.error(`[streamRemote] Status error: ${response.statusCode}`);
           return reject(err);
         }
+
+        console.log(`[streamRemote] Success, content-type: ${response.headers['content-type']}`);
 
         // Set content type if provided in options
         if (options.contentType) {
@@ -214,7 +232,20 @@ const streamRemote = async (res, url, downloadName, maxRedirects = 3, options = 
         // Stream the response to the client
         response.pipe(res);
         response.on('end', resolve);
-      }).on('error', reject);
+      });
+
+      req.on('timeout', () => {
+        req.destroy();
+        console.error(`[streamRemote] Request timeout for: ${currentUrl}`);
+        reject(new Error('Request timeout'));
+      });
+
+      req.on('error', (err) => {
+        console.error(`[streamRemote] Request error:`, err.message);
+        reject(err);
+      });
+
+      req.end();
     };
     
     // Start the request
@@ -228,6 +259,12 @@ export const streamOrRedirect = async (res, fileUrl, downloadName, notFoundMessa
   }
 
   if (isRemoteUrl(fileUrl)) {
+    // For Cloudinary URLs with inline disposition, redirect directly to original URL
+    if (isCloudinaryUrl(fileUrl) && (options.forceInline || !options.forceAttachment)) {
+      console.log(`[streamOrRedirect] Redirecting to Cloudinary URL for inline display: ${fileUrl}`);
+      return res.redirect(fileUrl);
+    }
+
     const candidates = [];
     // If Cloudinary URL, try an fl_attachment URL first (works for public assets)
     if (isCloudinaryUrl(fileUrl)) {
