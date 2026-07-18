@@ -265,6 +265,15 @@ export const streamOrRedirect = async (res, fileUrl, downloadName, notFoundMessa
       return res.redirect(fileUrl);
     }
 
+    // For Cloudinary URLs with attachment disposition, redirect with fl_attachment transformation
+    if (isCloudinaryUrl(fileUrl) && options.forceAttachment) {
+      const attachUrl = addAttachmentTransformation(fileUrl);
+      if (attachUrl) {
+        console.log(`[streamOrRedirect] Redirecting to Cloudinary URL with attachment: ${attachUrl}`);
+        return res.redirect(attachUrl);
+      }
+    }
+
     const candidates = [];
     // If Cloudinary URL, try an fl_attachment URL first (works for public assets)
     if (isCloudinaryUrl(fileUrl)) {
