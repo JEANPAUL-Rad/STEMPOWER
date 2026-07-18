@@ -182,25 +182,33 @@ const streamRemote = async (res, url, downloadName, maxRedirects = 3, options = 
 
         // Set content disposition for download with proper filename encoding
         if (downloadName) {
-          // If the provided name has no extension, infer one from response content-type.
-          const inferredExt = extFromContentType(response.headers['content-type']);
-          const hasExt = path.extname(String(downloadName)) !== '';
-          const resolvedName = !hasExt && inferredExt ? `${downloadName}${inferredExt}` : downloadName;
+          // If forceInline is true, set inline disposition for browser display (e.g., PDFs)
+          if (options.forceInline) {
+            res.setHeader('Content-Disposition', 'inline');
+          } else if (!options.forceAttachment) {
+            // Default to inline if not explicitly forced to attachment
+            res.setHeader('Content-Disposition', 'inline');
+          } else {
+            // If the provided name has no extension, infer one from response content-type.
+            const inferredExt = extFromContentType(response.headers['content-type']);
+            const hasExt = path.extname(String(downloadName)) !== '';
+            const resolvedName = !hasExt && inferredExt ? `${downloadName}${inferredExt}` : downloadName;
 
-          // "filename=" should be ASCII-safe to avoid header parsing issues in browsers.
-          const asciiName = String(resolvedName)
-            .replace(/[/\\]/g, '_')
-            .replace(/["\r\n]/g, '')
-            .trim() || 'download';
+            // "filename=" should be ASCII-safe to avoid header parsing issues in browsers.
+            const asciiName = String(resolvedName)
+              .replace(/[/\\]/g, '_')
+              .replace(/["\r\n]/g, '')
+              .trim() || 'download';
 
-          const safeFilenameStar = encodeURIComponent(asciiName)
-            .replace(/['()]/g, escape)
-            .replace(/\*/g, '%2A')
-            .replace(/"/g, '%22')
-            .replace(/\//g, '%2F')
-            .replace(/:/g, '%3A');
-          
-          res.setHeader('Content-Disposition', `attachment; filename="${asciiName}"; filename*=UTF-8''${safeFilenameStar}`);
+            const safeFilenameStar = encodeURIComponent(asciiName)
+              .replace(/['()]/g, escape)
+              .replace(/\*/g, '%2A')
+              .replace(/"/g, '%22')
+              .replace(/\//g, '%2F')
+              .replace(/:/g, '%3A');
+            
+            res.setHeader('Content-Disposition', `attachment; filename="${asciiName}"; filename*=UTF-8''${safeFilenameStar}`);
+          }
         }
 
         // Stream the response to the client
@@ -244,15 +252,30 @@ export const streamOrRedirect = async (res, fileUrl, downloadName, notFoundMessa
     return res.status(404).json({ message: notFoundMessage });
   }
 
-  return res.download(filePath, downloadName || path.basename(filePath), (err) => {
-    if (err && !res.headersSent) {
-      if (err.code === 'ENOENT') {
-        res.status(404).json({ message: notFoundMessage });
-      } else {
-        res.status(500).json({ message: 'Error downloading file.' });
+  // Handle inline disposition for local files
+  if (options.forceInline || !options.forceAttachment) {
+    const fileName = downloadName || path.basename(filePath);
+    res.setHeader('Content-Disposition', 'inline');
+    res.sendFile(filePath, (err) => {
+      if (err && !res.headersSent) {
+        if (err.code === 'ENOENT') {
+          res.status(404).json({ message: notFoundMessage });
+        } else {
+          res.status(500).json({ message: 'Error downloading file.' });
+        }
       }
-    }
-  });
+    });
+  } else {
+    return res.download(filePath, downloadName || path.basename(filePath), (err) => {
+      if (err && !res.headersSent) {
+        if (err.code === 'ENOENT') {
+          res.status(404).json({ message: notFoundMessage });
+        } else {
+          res.status(500).json({ message: 'Error downloading file.' });
+        }
+      }
+    });
+  }
 };
 
 
